@@ -84,6 +84,7 @@ function App() {
                       value: data.value,
                       isCancelled: data.isCancelled,
                       isDevolucao: data.isDevolucao,
+                      isRemessa: data.isRemessa,
                       isDuplicada: isDuplicada,
                       chave: data.chave,
                       numero: data.numero,
@@ -126,6 +127,7 @@ function App() {
             value: data.value,
             isCancelled: data.isCancelled,
             isDevolucao: data.isDevolucao,
+            isRemessa: data.isRemessa,
             isDuplicada: isDuplicada,
             chave: data.chave,
             numero: data.numero,
@@ -307,7 +309,7 @@ function App() {
             ) : (
               <ul className="file-list">
                 {files.map((file) => (
-                  <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isDuplicada ? 'duplicada' : ''}`}>
+                  <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''}`}>
                     <div className="file-info">
                       <span className="file-name" title={file.name}>
                         {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.numero}</span>}

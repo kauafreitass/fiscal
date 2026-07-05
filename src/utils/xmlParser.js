@@ -8,7 +8,6 @@ export const parseInvoiceXml = (xmlString) => {
       throw new Error("Erro ao interpretar arquivo XML.");
     }
 
-    // 1. Extrair Chave de Acesso (chNFe) para evitar duplicatas
     let chaveAcesso = null;
     const infNFe = xmlDoc.getElementsByTagName("infNFe")[0];
     if (infNFe && infNFe.getAttribute("Id")) {
@@ -19,11 +18,9 @@ export const parseInvoiceXml = (xmlString) => {
                  || xmlDoc.getElementsByTagName("chNFe")[0]?.textContent;
     }
 
-    // Extrair Número e Série (ide)
     let numero = xmlDoc.getElementsByTagName("nNF")[0]?.textContent;
     let serie = xmlDoc.getElementsByTagName("serie")[0]?.textContent;
 
-    // Fallback NFS-e
     if (!numero) {
       numero = xmlDoc.getElementsByTagName("Numero")[0]?.textContent;
       serie = xmlDoc.getElementsByTagName("Serie")[0]?.textContent || "Única";
@@ -32,16 +29,32 @@ export const parseInvoiceXml = (xmlString) => {
     const n = numero ? parseInt(numero, 10) : null;
     const s = serie || "Única";
 
-    // 2. Detectar Devolução (finNFe = 4)
     const finNFe = xmlDoc.getElementsByTagName("finNFe")[0]?.textContent;
     const isDevolucao = (finNFe === "4");
 
-    // 3. Detectar Cancelamento
     const cStat = xmlDoc.getElementsByTagName("cStat")[0]?.textContent;
     const descEvento = xmlDoc.getElementsByTagName("descEvento")[0]?.textContent;
     const isCancelled = (cStat === "101") || 
                         (cStat === "135" && descEvento?.includes("Cancelamento")) ||
                         xmlDoc.getElementsByTagName("retCancNFe").length > 0;
+
+    // Detectar Remessa / Transferência
+    const natOpNode = xmlDoc.getElementsByTagName("natOp")[0];
+    let isRemessa = false;
+    if (natOpNode) {
+      const natOp = natOpNode.textContent.toLowerCase();
+      // Verifica se a natureza da operação é uma remessa, transferência ou retorno
+      if (
+        natOp.includes("remessa") || 
+        natOp.includes("transferencia") || 
+        natOp.includes("transferência") || 
+        natOp.includes("retorno") ||
+        natOp.includes("simbolica") ||
+        natOp.includes("simbólica")
+      ) {
+        isRemessa = true;
+      }
+    }
 
     if (isCancelled) {
       return {
@@ -49,6 +62,20 @@ export const parseInvoiceXml = (xmlString) => {
         value: 0,
         isCancelled: true,
         isDevolucao: false,
+        isRemessa: false,
+        chave: chaveAcesso,
+        numero: n,
+        serie: s
+      };
+    }
+
+    if (isRemessa) {
+      return {
+        type: "Remessa/Transf.",
+        value: 0, // Ignoramos o valor para o faturamento base
+        isCancelled: false,
+        isDevolucao: false,
+        isRemessa: true,
         chave: chaveAcesso,
         numero: n,
         serie: s
@@ -62,6 +89,7 @@ export const parseInvoiceXml = (xmlString) => {
         value: parseFloat(vNF),
         isCancelled: false,
         isDevolucao: isDevolucao,
+        isRemessa: false,
         chave: chaveAcesso,
         numero: n,
         serie: s
@@ -75,6 +103,7 @@ export const parseInvoiceXml = (xmlString) => {
         value: parseFloat(valorServicos),
         isCancelled: false,
         isDevolucao: false,
+        isRemessa: false,
         chave: chaveAcesso,
         numero: n,
         serie: s

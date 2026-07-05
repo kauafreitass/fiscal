@@ -133,6 +133,8 @@ body {
 .file-item.cancelled .file-value { color: var(--danger-color); }
 .file-item.devolucao .file-name { color: #f59e0b; }
 .file-item.devolucao .file-value { color: #f59e0b; }
+.file-item.remessa .file-name { color: #38bdf8; }
+.file-item.remessa .file-value { color: #38bdf8; }
 .file-item.duplicada { opacity: 0.7; }
 .file-item.duplicada .file-type { color: var(--danger-color); font-weight: 500; }
 
