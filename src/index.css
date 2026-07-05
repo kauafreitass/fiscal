@@ -131,6 +131,10 @@ body {
 .file-item.error .file-name, .file-item.error .file-value { color: var(--danger-color); }
 .file-item.cancelled .file-name { color: var(--text-secondary); text-decoration: line-through; }
 .file-item.cancelled .file-value { color: var(--danger-color); }
+.file-item.devolucao .file-name { color: #f59e0b; }
+.file-item.devolucao .file-value { color: #f59e0b; }
+.file-item.duplicada { opacity: 0.7; }
+.file-item.duplicada .file-type { color: var(--danger-color); font-weight: 500; }
 
 .file-info { display: flex; flex-direction: column; gap: 0.25rem; overflow: hidden; }
 .file-name { font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
