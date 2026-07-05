@@ -239,7 +239,7 @@ function App() {
     <div className="app-container">
       <div className="header-actions">
         <div>
-          <h1 className="title">Calculadora de DAS</h1>
+          <h1 className="title">Simplifica DAS</h1>
           <p className="subtitle">Simples Nacional - Apuração Mensal</p>
         </div>
         <button className="btn" onClick={handlePrint} title="Imprimir Relatório ou Salvar como PDF">

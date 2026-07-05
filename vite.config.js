@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
       manifest: {
-        name: 'Calculadora de DAS',
-        short_name: 'Calc DAS',
+        name: 'Simplifica DAS',
+        short_name: 'Simplifica',
         description: 'Calcule o Simples Nacional diretamente pelo navegador lendo seus XMLs.',
         theme_color: '#0f172a',
         background_color: '#0f172a',
