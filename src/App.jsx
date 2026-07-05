@@ -42,42 +42,9 @@ function App() {
   const processFiles = async (fileList) => {
     setIsProcessing(true);
     
-    // Obter chaves já existentes para evitar duplicidade
-    // Usamos setState com callback para garantir que temos as últimas chaves no loop
     setFiles(prevFiles => {
-      const currentKeys = new Set(prevFiles.filter(f => f.chave).map(f => f.chave));
-      const currentNames = new Set(prevFiles.map(f => f.name));
-      const newFiles = [];
-
-      const processData = (data, name) => {
-        let isDuplicada = false;
-        
-        if (data.chave) {
-          if (currentKeys.has(data.chave)) isDuplicada = true;
-          else currentKeys.add(data.chave);
-        } else {
-          // Fallback se não tiver chave, usamos o nome do arquivo
-          if (currentNames.has(name)) isDuplicada = true;
-          else currentNames.add(name);
-        }
-
-        return {
-          id: crypto.randomUUID(),
-          name: name,
-          type: isDuplicada ? "Nota Duplicada" : data.type,
-          value: data.value,
-          isCancelled: data.isCancelled,
-          isDevolucao: data.isDevolucao,
-          isDuplicada: isDuplicada,
-          chave: data.chave,
-          error: isDuplicada ? "Nota Duplicada" : null
-        };
-      };
-
-      // Nota: JSZip e FileReader são assíncronos, então faremos a checagem no fim.
-      // Como setState precisa ser síncrono, vamos apenas processar tudo externamente.
-      // O React não permite promises no setState dessa forma.
-      return prevFiles; 
+      // Usamos apenas o return state update no final para React
+      return prevFiles;
     });
 
     const newFiles = [];
@@ -119,14 +86,12 @@ function App() {
                       isDevolucao: data.isDevolucao,
                       isDuplicada: isDuplicada,
                       chave: data.chave,
+                      numero: data.numero,
+                      serie: data.serie,
                       error: isDuplicada ? "Esta nota já foi processada." : null
                     });
                   } catch (err) {
-                    newFiles.push({
-                      id: crypto.randomUUID(),
-                      name: zipEntry.name.split('/').pop(),
-                      error: err.message || "Erro ao ler o arquivo.",
-                    });
+                    newFiles.push({ id: crypto.randomUUID(), name: zipEntry.name.split('/').pop(), error: err.message || "Erro ao ler o arquivo." });
                   }
                 })
               );
@@ -163,6 +128,8 @@ function App() {
             isDevolucao: data.isDevolucao,
             isDuplicada: isDuplicada,
             chave: data.chave,
+            numero: data.numero,
+            serie: data.serie,
             error: isDuplicada ? "Esta nota já foi processada." : null
           });
         } catch (err) {
@@ -207,19 +174,68 @@ function App() {
     window.print();
   };
 
-  // Filtramos os válidos: não tem erro, não são cancelados, nem duplicados
+  // Lógica de Auditoria de Sequência
+  const checkSequence = () => {
+    // Usamos notas válidas e também as canceladas (pois nota cancelada tapa buraco)
+    const filesToAudit = files.filter(f => !f.error && !f.isDuplicada && f.numero != null);
+    
+    // Agrupar por Tipo e Série
+    const groups = {};
+    filesToAudit.forEach(f => {
+      const isNfe = f.type.includes('NF-e') || f.type.includes('Cancelada') || f.type.includes('Devolução');
+      const key = `${isNfe ? 'NF-e' : 'NFS-e'} - Série ${f.serie}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(f.numero);
+    });
+
+    const gapsReport = [];
+    
+    Object.keys(groups).forEach(key => {
+      const nums = groups[key].sort((a, b) => a - b);
+      if (nums.length < 2) return; // Não dá pra auditar com 1 nota só
+      
+      const missing = [];
+      let min = nums[0];
+      let max = nums[nums.length - 1];
+      
+      for (let i = min; i <= max; i++) {
+        if (!nums.includes(i)) {
+          missing.push(i);
+        }
+      }
+      
+      if (missing.length > 0) {
+        // Agrupar sequências pra ficar bonito (ex: 4,5,6 virar 4-6)
+        let ranges = [];
+        let rangeStart = missing[0];
+        let prev = missing[0];
+        
+        for (let i = 1; i <= missing.length; i++) {
+          if (missing[i] === prev + 1) {
+            prev = missing[i];
+          } else {
+            ranges.push(rangeStart === prev ? `${rangeStart}` : `${rangeStart} a ${prev}`);
+            rangeStart = missing[i];
+            prev = missing[i];
+          }
+        }
+        gapsReport.push({ group: key, missing: ranges.join(', ') });
+      }
+    });
+
+    return gapsReport;
+  };
+
+  const gaps = checkSequence();
   const validFiles = files.filter((f) => !f.error && !f.isCancelled && !f.isDuplicada);
   
-  // Notas de devolução entram abatendo o valor
   const totalProdutosNormal = validFiles.filter(f => f.type.includes('NF-e') && !f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
   const totalProdutosDevolucao = validFiles.filter(f => f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
   
   const totalProdutos = totalProdutosNormal - totalProdutosDevolucao;
   const totalServicos = validFiles.filter(f => f.type.includes('NFS-e')).reduce((acc, f) => acc + f.value, 0);
   
-  // O faturamento total não pode ser menor que zero
   const totalFaturamento = Math.max(0, totalProdutos + totalServicos);
-
   const aliquotaEfetiva = calcularSimplesNacional(rbt12, anexo);
   const valorDas = totalFaturamento * aliquotaEfetiva;
 
@@ -227,13 +243,8 @@ function App() {
   const pctProdutos = grossTotal > 0 ? (totalProdutosNormal / grossTotal) * 100 : 0;
   const pctServicos = grossTotal > 0 ? (totalServicos / grossTotal) * 100 : 0;
 
-  const formatCurrency = (value) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
-  };
-
-  const formatPercent = (value) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
-  };
+  const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+  const formatPercent = (value) => new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 
   return (
     <div className="app-container">
@@ -252,13 +263,7 @@ function App() {
 
       <div className="main-content">
         <div className="glass-panel">
-          <div
-            className={`dropzone ${isDragging ? 'active' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current.click()}
-          >
+          <div className={`dropzone ${isDragging ? 'active' : ''}`} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={() => fileInputRef.current.click()}>
             {isProcessing ? (
               <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem'}}>
                 <div className="spinner" style={{width: '40px', height: '40px', border: '4px solid var(--border-color)', borderTopColor: 'var(--accent-color)', borderRadius: '50%', animation: 'spin 1s linear infinite'}}></div>
@@ -304,7 +309,10 @@ function App() {
                 {files.map((file) => (
                   <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isDuplicada ? 'duplicada' : ''}`}>
                     <div className="file-info">
-                      <span className="file-name" title={file.name}>{file.name}</span>
+                      <span className="file-name" title={file.name}>
+                        {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.numero}</span>}
+                        {file.name}
+                      </span>
                       <span className="file-type">{file.error ? file.error : file.type}</span>
                     </div>
                     <div className="file-actions">
@@ -374,6 +382,30 @@ function App() {
                 <span className="result-value tax">{formatCurrency(valorDas)}</span>
               </div>
             </div>
+
+            {/* Quadro de Auditoria */}
+            {files.length > 1 && (
+              <div className="audit-panel" style={{marginTop: '1rem', padding: '1rem', borderRadius: '0.75rem', backgroundColor: gaps.length > 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)', border: `1px solid ${gaps.length > 0 ? 'var(--danger-color)' : 'var(--success-color)'}`}}>
+                <h4 style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: gaps.length > 0 ? 'var(--danger-color)' : 'var(--success-color)'}}>
+                  <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                  </svg>
+                  Auditoria de Sequência
+                </h4>
+                {gaps.length > 0 ? (
+                  <div>
+                    <p style={{fontSize: '0.875rem', marginBottom: '0.5rem'}}>Atenção! Foram detectados pulos na sequência numérica:</p>
+                    <ul style={{fontSize: '0.75rem', color: 'var(--text-secondary)', paddingLeft: '1.25rem'}}>
+                      {gaps.map((gap, i) => (
+                        <li key={i}><strong>{gap.group}:</strong> Faltam notas {gap.missing}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p style={{fontSize: '0.875rem', color: 'var(--text-secondary)'}}>Nenhuma nota foi pulada na sequência enviada.</p>
+                )}
+              </div>
+            )}
 
             {(pctProdutos > 0 || pctServicos > 0) && (
               <div className="chart-container">

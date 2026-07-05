@@ -14,11 +14,23 @@ export const parseInvoiceXml = (xmlString) => {
     if (infNFe && infNFe.getAttribute("Id")) {
       chaveAcesso = infNFe.getAttribute("Id").replace("NFe", "");
     }
-    // Se for NFS-e pode ter outra tag, tentamos um fallback simplificado
     if (!chaveAcesso) {
       chaveAcesso = xmlDoc.getElementsByTagName("CodigoVerificacao")[0]?.textContent 
                  || xmlDoc.getElementsByTagName("chNFe")[0]?.textContent;
     }
+
+    // Extrair Número e Série (ide)
+    let numero = xmlDoc.getElementsByTagName("nNF")[0]?.textContent;
+    let serie = xmlDoc.getElementsByTagName("serie")[0]?.textContent;
+
+    // Fallback NFS-e
+    if (!numero) {
+      numero = xmlDoc.getElementsByTagName("Numero")[0]?.textContent;
+      serie = xmlDoc.getElementsByTagName("Serie")[0]?.textContent || "Única";
+    }
+
+    const n = numero ? parseInt(numero, 10) : null;
+    const s = serie || "Única";
 
     // 2. Detectar Devolução (finNFe = 4)
     const finNFe = xmlDoc.getElementsByTagName("finNFe")[0]?.textContent;
@@ -37,11 +49,12 @@ export const parseInvoiceXml = (xmlString) => {
         value: 0,
         isCancelled: true,
         isDevolucao: false,
-        chave: chaveAcesso
+        chave: chaveAcesso,
+        numero: n,
+        serie: s
       };
     }
 
-    // Tentar extrair valor da NF-e (Tag <vNF> dentro de <ICMSTot>)
     let vNF = xmlDoc.getElementsByTagName("vNF")[0]?.textContent;
     if (vNF) {
       return {
@@ -49,11 +62,12 @@ export const parseInvoiceXml = (xmlString) => {
         value: parseFloat(vNF),
         isCancelled: false,
         isDevolucao: isDevolucao,
-        chave: chaveAcesso
+        chave: chaveAcesso,
+        numero: n,
+        serie: s
       };
     }
 
-    // Tentar extrair valor da NFS-e (Tag <ValorServicos>)
     let valorServicos = xmlDoc.getElementsByTagName("ValorServicos")[0]?.textContent;
     if (valorServicos) {
       return {
@@ -61,7 +75,9 @@ export const parseInvoiceXml = (xmlString) => {
         value: parseFloat(valorServicos),
         isCancelled: false,
         isDevolucao: false,
-        chave: chaveAcesso
+        chave: chaveAcesso,
+        numero: n,
+        serie: s
       };
     }
 
