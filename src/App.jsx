@@ -184,7 +184,7 @@ function App() {
     // Agrupar por Tipo e Série
     const groups = {};
     filesToAudit.forEach(f => {
-      const isNfe = f.type.includes('NF-e') || f.type.includes('Cancelada') || f.type.includes('Devolução');
+      const isNfe = f.type.includes('NF-e') || f.type.includes('Cancelada') || f.type.includes('Devolução') || f.type.includes('Remessa');
       const key = `${isNfe ? 'NF-e' : 'NFS-e'} - Série ${f.serie}`;
       if (!groups[key]) groups[key] = [];
       groups[key].push(f.numero);
