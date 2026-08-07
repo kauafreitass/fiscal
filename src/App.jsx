@@ -85,9 +85,12 @@ function App() {
                       isCancelled: data.isCancelled,
                       isDevolucao: data.isDevolucao,
                       isRemessa: data.isRemessa,
+                      isInutilizada: data.isInutilizada || false,
                       isDuplicada: isDuplicada,
                       chave: data.chave,
                       numero: data.numero,
+                      numeroIni: data.numeroIni || null,
+                      numeroFin: data.numeroFin || null,
                       serie: data.serie,
                       error: isDuplicada ? "Esta nota já foi processada." : null
                     });
@@ -128,9 +131,12 @@ function App() {
             isCancelled: data.isCancelled,
             isDevolucao: data.isDevolucao,
             isRemessa: data.isRemessa,
+            isInutilizada: data.isInutilizada || false,
             isDuplicada: isDuplicada,
             chave: data.chave,
             numero: data.numero,
+            numeroIni: data.numeroIni || null,
+            numeroFin: data.numeroFin || null,
             serie: data.serie,
             error: isDuplicada ? "Esta nota já foi processada." : null
           });
@@ -184,10 +190,17 @@ function App() {
     // Agrupar por Tipo e Série
     const groups = {};
     filesToAudit.forEach(f => {
-      const isNfe = f.type.includes('NF-e') || f.type.includes('Cancelada') || f.type.includes('Devolução') || f.type.includes('Remessa');
+      const isNfe = f.type.includes('NF-e') || f.type.includes('Cancelada') || f.type.includes('Devolução') || f.type.includes('Remessa') || f.type.includes('Inutilizada');
       const key = `${isNfe ? 'NF-e' : 'NFS-e'} - Série ${f.serie}`;
       if (!groups[key]) groups[key] = [];
-      groups[key].push(f.numero);
+      // Inutilizadas cobrem um intervalo de números
+      if (f.isInutilizada && f.numeroIni != null && f.numeroFin != null) {
+        for (let num = f.numeroIni; num <= f.numeroFin; num++) {
+          groups[key].push(num);
+        }
+      } else {
+        groups[key].push(f.numero);
+      }
     });
 
     const gapsReport = [];
@@ -229,7 +242,7 @@ function App() {
   };
 
   const gaps = checkSequence();
-  const validFiles = files.filter((f) => !f.error && !f.isCancelled && !f.isDuplicada);
+  const validFiles = files.filter((f) => !f.error && !f.isCancelled && !f.isDuplicada && !f.isInutilizada);
   
   const totalProdutosNormal = validFiles.filter(f => f.type.includes('NF-e') && !f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
   const totalProdutosDevolucao = validFiles.filter(f => f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
@@ -309,22 +322,25 @@ function App() {
             ) : (
               <ul className="file-list">
                 {files.map((file) => (
-                  <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''}`}>
+                  <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''} ${file.isInutilizada ? 'inutilizada' : ''}`}>
                     <div className="file-info">
                       <span className="file-name" title={file.name}>
-                        {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.numero}</span>}
+                        {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.isInutilizada && file.numeroFin > file.numeroIni ? `${file.numeroIni}-${file.numeroFin}` : file.numero}</span>}
                         {file.name}
                       </span>
                       <span className="file-type">{file.error ? file.error : file.type}</span>
                     </div>
                     <div className="file-actions">
-                      {!file.error && !file.isCancelled && (
+                      {!file.error && !file.isCancelled && !file.isInutilizada && (
                         <span className="file-value" style={{ marginRight: '1rem' }}>
                           {file.isDevolucao ? '-' : ''}{formatCurrency(file.value)}
                         </span>
                       )}
                       {file.isCancelled && (
                         <span className="file-value" style={{ marginRight: '1rem' }}>Cancelada</span>
+                      )}
+                      {file.isInutilizada && (
+                        <span className="file-value" style={{ marginRight: '1rem' }}>Inutilizada</span>
                       )}
                       <button className="remove-btn" onClick={() => removeFile(file.id)} title="Remover arquivo">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">

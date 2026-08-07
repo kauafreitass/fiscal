@@ -137,6 +137,8 @@ body {
 .file-item.remessa .file-value { color: #38bdf8; }
 .file-item.duplicada { opacity: 0.7; }
 .file-item.duplicada .file-type { color: var(--danger-color); font-weight: 500; }
+.file-item.inutilizada .file-name { color: #a78bfa; }
+.file-item.inutilizada .file-value { color: #a78bfa; }
 
 .file-info { display: flex; flex-direction: column; gap: 0.25rem; overflow: hidden; }
 .file-name { font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }

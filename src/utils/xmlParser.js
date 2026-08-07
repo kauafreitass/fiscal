@@ -23,11 +23,44 @@ export const parseInvoiceXml = (xmlString) => {
 
     if (!numero) {
       numero = xmlDoc.getElementsByTagName("Numero")[0]?.textContent;
-      serie = xmlDoc.getElementsByTagName("Serie")[0]?.textContent || "Única";
+      if (!serie) {
+        serie = xmlDoc.getElementsByTagName("Serie")[0]?.textContent || "Única";
+      }
+    }
+
+    // Fallback: extrair número e série da chave de acesso (44 dígitos)
+    // Isso é essencial para XMLs de evento (cancelamento, carta de correção, etc.)
+    // que não possuem as tags <nNF> e <serie> diretamente.
+    // Estrutura da chave: UF(2) AAMM(4) CNPJ(14) MOD(2) SERIE(3) NUM(9) ...
+    if (!numero && chaveAcesso && /^\d{44}$/.test(chaveAcesso)) {
+      serie = String(parseInt(chaveAcesso.substring(22, 25), 10));
+      numero = String(parseInt(chaveAcesso.substring(25, 34), 10));
     }
 
     const n = numero ? parseInt(numero, 10) : null;
     const s = serie || "Única";
+
+    // Detectar Inutilização de numeração (procInutNFe)
+    // Esses XMLs possuem <nNFIni> e <nNFFin> indicando o intervalo inutilizado
+    const nNFIni = xmlDoc.getElementsByTagName("nNFIni")[0]?.textContent;
+    const nNFFin = xmlDoc.getElementsByTagName("nNFFin")[0]?.textContent;
+    if (nNFIni && nNFFin) {
+      const iniNum = parseInt(nNFIni, 10);
+      const finNum = parseInt(nNFFin, 10);
+      return {
+        type: "Inutilizada",
+        value: 0,
+        isCancelled: false,
+        isDevolucao: false,
+        isRemessa: false,
+        isInutilizada: true,
+        chave: null,
+        numero: iniNum,
+        numeroIni: iniNum,
+        numeroFin: finNum,
+        serie: s
+      };
+    }
 
     const finNFe = xmlDoc.getElementsByTagName("finNFe")[0]?.textContent;
     const isDevolucao = (finNFe === "4");
