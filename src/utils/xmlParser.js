@@ -1,3 +1,73 @@
+// CSOSNs que indicam Substituição Tributária (ICMS já recolhido)
+const CSOSN_COM_ST = new Set(['201', '202', '203', '500']);
+
+/**
+ * Extrai o CSOSN de um elemento <det> (item da NF-e).
+ * Procura em todas as tags ICMSSN* possíveis dentro de <ICMS>.
+ */
+const extrairCSOSN = (detElement) => {
+  const icmsNode = detElement.getElementsByTagName("ICMS")[0];
+  if (!icmsNode) return null;
+
+  // Tenta encontrar o CSOSN em qualquer tag filha de <ICMS>
+  // As tags possíveis: ICMSSN101, ICMSSN102, ICMSSN201, ICMSSN202, ICMSSN500, ICMSSN900
+  const csosnTag = icmsNode.getElementsByTagName("CSOSN")[0];
+  if (csosnTag) return csosnTag.textContent.trim();
+
+  // Fallback: verificar se é regime normal (CST em vez de CSOSN)
+  // Neste caso retornamos null — não é Simples Nacional
+  return null;
+};
+
+/**
+ * Analisa os itens (<det>) da NF-e e segrega a receita entre
+ * itens com Substituição Tributária e sem ST.
+ * Retorna { valorComST, valorSemST, itensComST, itensSemST, csosns }
+ */
+const analisarItensCSOSN = (xmlDoc) => {
+  const detElements = xmlDoc.getElementsByTagName("det");
+  if (detElements.length === 0) {
+    return { valorComST: 0, valorSemST: 0, itensComST: 0, itensSemST: 0, csosns: [] };
+  }
+
+  let totalProdST = 0;
+  let totalProdSemST = 0;
+  let itensComST = 0;
+  let itensSemST = 0;
+  const csosnsEncontrados = new Set();
+
+  for (let i = 0; i < detElements.length; i++) {
+    const det = detElements[i];
+    const prodNode = det.getElementsByTagName("prod")[0];
+    if (!prodNode) continue;
+
+    const vProd = parseFloat(prodNode.getElementsByTagName("vProd")[0]?.textContent || "0");
+    const vDesc = parseFloat(prodNode.getElementsByTagName("vDesc")[0]?.textContent || "0");
+    const valorItem = vProd - vDesc;
+
+    const csosn = extrairCSOSN(det);
+    if (csosn) {
+      csosnsEncontrados.add(csosn);
+    }
+
+    if (csosn && CSOSN_COM_ST.has(csosn)) {
+      totalProdST += valorItem;
+      itensComST++;
+    } else {
+      totalProdSemST += valorItem;
+      itensSemST++;
+    }
+  }
+
+  return {
+    valorComST: totalProdST,
+    valorSemST: totalProdSemST,
+    itensComST,
+    itensSemST,
+    csosns: Array.from(csosnsEncontrados).sort()
+  };
+};
+
 export const parseInvoiceXml = (xmlString) => {
   try {
     const parser = new DOMParser();
@@ -50,6 +120,11 @@ export const parseInvoiceXml = (xmlString) => {
       return {
         type: "Inutilizada",
         value: 0,
+        valorComST: 0,
+        valorSemST: 0,
+        itensComST: 0,
+        itensSemST: 0,
+        csosns: [],
         isCancelled: false,
         isDevolucao: false,
         isRemessa: false,
@@ -93,6 +168,11 @@ export const parseInvoiceXml = (xmlString) => {
       return {
         type: "Cancelada",
         value: 0,
+        valorComST: 0,
+        valorSemST: 0,
+        itensComST: 0,
+        itensSemST: 0,
+        csosns: [],
         isCancelled: true,
         isDevolucao: false,
         isRemessa: false,
@@ -106,6 +186,11 @@ export const parseInvoiceXml = (xmlString) => {
       return {
         type: "Remessa/Transf.",
         value: 0, // Ignoramos o valor para o faturamento base
+        valorComST: 0,
+        valorSemST: 0,
+        itensComST: 0,
+        itensSemST: 0,
+        csosns: [],
         isCancelled: false,
         isDevolucao: false,
         isRemessa: true,
@@ -115,11 +200,33 @@ export const parseInvoiceXml = (xmlString) => {
       };
     }
 
+    // Analisar CSOSNs dos itens da NF-e
+    const analise = analisarItensCSOSN(xmlDoc);
+
     let vNF = xmlDoc.getElementsByTagName("vNF")[0]?.textContent;
     if (vNF) {
+      const valorTotal = parseFloat(vNF);
+
+      // Calcular proporção de ST sobre o valor total da nota
+      // Usamos proporção porque vNF inclui frete, seguro, outras despesas
+      const totalItens = analise.valorComST + analise.valorSemST;
+      let valorComST = 0;
+      let valorSemST = valorTotal;
+
+      if (totalItens > 0) {
+        const propST = analise.valorComST / totalItens;
+        valorComST = valorTotal * propST;
+        valorSemST = valorTotal * (1 - propST);
+      }
+
       return {
         type: isDevolucao ? "Devolução (NF-e)" : "NF-e/NFC-e",
-        value: parseFloat(vNF),
+        value: valorTotal,
+        valorComST: Math.round(valorComST * 100) / 100,
+        valorSemST: Math.round(valorSemST * 100) / 100,
+        itensComST: analise.itensComST,
+        itensSemST: analise.itensSemST,
+        csosns: analise.csosns,
         isCancelled: false,
         isDevolucao: isDevolucao,
         isRemessa: false,
@@ -134,6 +241,11 @@ export const parseInvoiceXml = (xmlString) => {
       return {
         type: "NFS-e",
         value: parseFloat(valorServicos),
+        valorComST: 0,
+        valorSemST: 0,
+        itensComST: 0,
+        itensSemST: 0,
+        csosns: [],
         isCancelled: false,
         isDevolucao: false,
         isRemessa: false,

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
 import { parseInvoiceXml } from './utils/xmlParser';
-import { calcularSimplesNacional } from './utils/simplesNacional';
+import { calcularSimplesNacional, calcularDasComST } from './utils/simplesNacional';
 import './index.css';
 
 function App() {
@@ -17,6 +17,10 @@ function App() {
     const saved = localStorage.getItem('das_anexo');
     return saved || 'anexo1';
   });
+  const [anexoServicos, setAnexoServicos] = useState(() => {
+    const saved = localStorage.getItem('das_anexo_servicos');
+    return saved || 'anexo3';
+  });
 
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -27,7 +31,8 @@ function App() {
     localStorage.setItem('das_files', JSON.stringify(files));
     localStorage.setItem('das_rbt12', rbt12);
     localStorage.setItem('das_anexo', anexo);
-  }, [files, rbt12, anexo]);
+    localStorage.setItem('das_anexo_servicos', anexoServicos);
+  }, [files, rbt12, anexo, anexoServicos]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -82,6 +87,11 @@ function App() {
                       name: name,
                       type: isDuplicada ? "Nota Duplicada" : data.type,
                       value: data.value,
+                      valorComST: data.valorComST || 0,
+                      valorSemST: data.valorSemST || 0,
+                      itensComST: data.itensComST || 0,
+                      itensSemST: data.itensSemST || 0,
+                      csosns: data.csosns || [],
                       isCancelled: data.isCancelled,
                       isDevolucao: data.isDevolucao,
                       isRemessa: data.isRemessa,
@@ -128,6 +138,11 @@ function App() {
             name: name,
             type: isDuplicada ? "Nota Duplicada" : data.type,
             value: data.value,
+            valorComST: data.valorComST || 0,
+            valorSemST: data.valorSemST || 0,
+            itensComST: data.itensComST || 0,
+            itensSemST: data.itensSemST || 0,
+            csosns: data.csosns || [],
             isCancelled: data.isCancelled,
             isDevolucao: data.isDevolucao,
             isRemessa: data.isRemessa,
@@ -251,12 +266,45 @@ function App() {
   const totalServicos = validFiles.filter(f => f.type.includes('NFS-e')).reduce((acc, f) => acc + f.value, 0);
   
   const totalFaturamento = Math.max(0, totalProdutos + totalServicos);
-  const aliquotaEfetiva = calcularSimplesNacional(rbt12, anexo);
-  const valorDas = totalFaturamento * aliquotaEfetiva;
+
+  // --- Cálculo separado: Produtos (NF-e) ---
+  const aliquotaProdutos = calcularSimplesNacional(rbt12, anexo);
+  const receitaProdutosBase = Math.max(0, totalProdutos);
+
+  // Segregar receita com ST e sem ST
+  const nfesValidas = validFiles.filter(f => f.type.includes('NF-e') && !f.isDevolucao);
+  const totalComST = nfesValidas.reduce((acc, f) => acc + (f.valorComST || 0), 0);
+  const totalSemST = nfesValidas.reduce((acc, f) => acc + (f.valorSemST || 0), 0);
+  
+  // Devoluções de ST também devem ser abatidas
+  const devolucoesComST = validFiles.filter(f => f.isDevolucao).reduce((acc, f) => acc + (f.valorComST || 0), 0);
+  const receitaComSTLiquida = Math.max(0, totalComST - devolucoesComST);
+
+  // DAS de Produtos com dedução de ICMS-ST
+  const dasCalcProdutos = calcularDasComST(rbt12, anexo, receitaProdutosBase, receitaComSTLiquida);
+
+  // --- Cálculo separado: Serviços (NFS-e) ---
+  const aliquotaServicos = calcularSimplesNacional(rbt12, anexoServicos);
+  const valorDasServicos = totalServicos * aliquotaServicos;
+
+  // --- Totais combinados ---
+  const valorDasTotal = Math.round((dasCalcProdutos.valorDas + Math.max(0, valorDasServicos)) * 100) / 100;
+
+  // Contagem de itens com ST
+  const totalItensComST = nfesValidas.reduce((acc, f) => acc + (f.itensComST || 0), 0);
+  const totalItensSemST = nfesValidas.reduce((acc, f) => acc + (f.itensSemST || 0), 0);
+
+  // CSOSNs encontrados em todas as notas
+  const todosCSOs = new Set();
+  nfesValidas.forEach(f => (f.csosns || []).forEach(c => todosCSOs.add(c)));
+  const csosnsUnicos = Array.from(todosCSOs).sort();
 
   const grossTotal = totalProdutosNormal + totalServicos;
   const pctProdutos = grossTotal > 0 ? (totalProdutosNormal / grossTotal) * 100 : 0;
   const pctServicos = grossTotal > 0 ? (totalServicos / grossTotal) * 100 : 0;
+
+  // Nomes amigáveis dos anexos
+  const nomeAnexo = { anexo1: 'Anexo I', anexo2: 'Anexo II', anexo3: 'Anexo III', anexo4: 'Anexo IV', anexo5: 'Anexo V' };
 
   const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
   const formatPercent = (value) => new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
@@ -328,7 +376,13 @@ function App() {
                         {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.isInutilizada && file.numeroFin > file.numeroIni ? `${file.numeroIni}-${file.numeroFin}` : file.numero}</span>}
                         {file.name}
                       </span>
-                      <span className="file-type">{file.error ? file.error : file.type}</span>
+                      <span className="file-type">
+                      {file.error ? file.error : file.type}
+                      {file.itensComST > 0 && !file.error && <span className="badge-st">ST</span>}
+                      {file.csosns && file.csosns.length > 0 && !file.error && (
+                        <span className="badge-csosn">CSOSN: {file.csosns.join(', ')}</span>
+                      )}
+                    </span>
                     </div>
                     <div className="file-actions">
                       {!file.error && !file.isCancelled && !file.isInutilizada && (
@@ -358,17 +412,6 @@ function App() {
         <div className="glass-panel">
           <div className="settings-panel">
             <div className="input-group">
-              <label htmlFor="anexo">Anexo do Simples Nacional</label>
-              <div className="input-wrapper">
-                <select id="anexo" value={anexo} onChange={(e) => setAnexo(e.target.value)}>
-                  <option value="anexo1">Anexo I - Comércio</option>
-                  <option value="anexo2">Anexo II - Indústria</option>
-                  <option value="anexo3">Anexo III - Serviços</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="input-group">
               <label htmlFor="rbt12">Receita Bruta 12 Meses (RBT12)</label>
               <div className="input-wrapper">
                 <span className="input-prefix">R$</span>
@@ -376,11 +419,35 @@ function App() {
               </div>
             </div>
 
-            <div className="results-card">
-              <div className="result-row">
-                <span className="result-label">Alíquota Efetiva</span>
-                <span className="result-value aliquota">{formatPercent(aliquotaEfetiva)}</span>
+            <div className="anexo-grid">
+              <div className="input-group">
+                <label htmlFor="anexo">
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{verticalAlign: 'middle', marginRight: '0.3rem'}}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                  Produtos (NF-e)
+                </label>
+                <div className="input-wrapper">
+                  <select id="anexo" value={anexo} onChange={(e) => setAnexo(e.target.value)}>
+                    <option value="anexo1">Anexo I - Comércio</option>
+                    <option value="anexo2">Anexo II - Indústria</option>
+                  </select>
+                </div>
               </div>
+              <div className="input-group">
+                <label htmlFor="anexoServicos">
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{verticalAlign: 'middle', marginRight: '0.3rem'}}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                  Serviços (NFS-e)
+                </label>
+                <div className="input-wrapper">
+                  <select id="anexoServicos" value={anexoServicos} onChange={(e) => setAnexoServicos(e.target.value)}>
+                    <option value="anexo3">Anexo III - Serviços</option>
+                    <option value="anexo4">Anexo IV - Construção/Vigilância</option>
+                    <option value="anexo5">Anexo V - Serviços Específicos</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="results-card">
               <div className="result-row">
                 <span className="result-label">Notas Fiscais Válidas</span>
                 <span className="result-value">{validFiles.length}</span>
@@ -392,12 +459,74 @@ function App() {
                 </div>
               )}
               <div className="result-row">
-                <span className="result-label">Faturamento Base</span>
+                <span className="result-label">Faturamento Total</span>
                 <span className="result-value total">{formatCurrency(totalFaturamento)}</span>
               </div>
+            </div>
+
+            {/* Breakdown por tipo */}
+            <div className="breakdown-grid">
+              {/* Card Produtos */}
+              <div className="breakdown-card">
+                <div className="breakdown-header">
+                  <span className="breakdown-icon" style={{background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa'}}>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                  </span>
+                  <span className="breakdown-label">Produtos ({nomeAnexo[anexo]})</span>
+                </div>
+                <div className="breakdown-row">
+                  <span>Receita</span>
+                  <span>{formatCurrency(receitaProdutosBase)}</span>
+                </div>
+                <div className="breakdown-row">
+                  <span>Alíquota Efetiva</span>
+                  <span className="breakdown-aliq">{formatPercent(aliquotaProdutos)}</span>
+                </div>
+                {dasCalcProdutos.deducaoICMS > 0 && (
+                  <div className="breakdown-row">
+                    <span>Dedução ICMS-ST</span>
+                    <span style={{color: '#10b981'}}>- {formatCurrency(dasCalcProdutos.deducaoICMS)}</span>
+                  </div>
+                )}
+                <div className="breakdown-row breakdown-total">
+                  <span>DAS Produtos</span>
+                  <span>{formatCurrency(dasCalcProdutos.valorDas)}</span>
+                </div>
+              </div>
+
+              {/* Card Serviços */}
+              <div className="breakdown-card">
+                <div className="breakdown-header">
+                  <span className="breakdown-icon" style={{background: 'rgba(16, 185, 129, 0.15)', color: '#34d399'}}>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                  </span>
+                  <span className="breakdown-label">Serviços ({nomeAnexo[anexoServicos]})</span>
+                </div>
+                <div className="breakdown-row">
+                  <span>Receita</span>
+                  <span>{formatCurrency(totalServicos)}</span>
+                </div>
+                <div className="breakdown-row">
+                  <span>Alíquota Efetiva</span>
+                  <span className="breakdown-aliq">{formatPercent(aliquotaServicos)}</span>
+                </div>
+                {anexoServicos === 'anexo4' && totalServicos > 0 && (
+                  <div className="breakdown-row" style={{color: '#f59e0b', fontSize: '0.7rem'}}>
+                    <span>⚠ ISS pago separado à prefeitura</span>
+                  </div>
+                )}
+                <div className="breakdown-row breakdown-total">
+                  <span>DAS Serviços</span>
+                  <span>{formatCurrency(Math.max(0, Math.round(valorDasServicos * 100) / 100))}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Total DAS */}
+            <div className="results-card das-total-card">
               <div className="result-row">
-                <span className="result-label">Valor do DAS</span>
-                <span className="result-value tax">{formatCurrency(valorDas)}</span>
+                <span className="result-label">Valor Total do DAS</span>
+                <span className="result-value tax">{formatCurrency(valorDasTotal)}</span>
               </div>
             </div>
 
@@ -422,6 +551,70 @@ function App() {
                 ) : (
                   <p style={{fontSize: '0.875rem', color: 'var(--text-secondary)'}}>Nenhuma nota foi pulada na sequência enviada.</p>
                 )}
+              </div>
+            )}
+
+            {/* Análise de CSOSN / Substituição Tributária */}
+            {(totalComST > 0 || totalSemST > 0) && nfesValidas.length > 0 && (
+              <div className="csosn-panel">
+                <h4 className="csosn-title">
+                  <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                  </svg>
+                  Análise de CSOSN
+                </h4>
+
+                <div className="csosn-grid">
+                  <div className="csosn-card csosn-card-st">
+                    <span className="csosn-card-label">Receita com ST</span>
+                    <span className="csosn-card-value">{formatCurrency(totalComST)}</span>
+                    <span className="csosn-card-detail">{totalItensComST} {totalItensComST === 1 ? 'item' : 'itens'}</span>
+                  </div>
+                  <div className="csosn-card csosn-card-normal">
+                    <span className="csosn-card-label">Receita sem ST</span>
+                    <span className="csosn-card-value">{formatCurrency(totalSemST)}</span>
+                    <span className="csosn-card-detail">{totalItensSemST} {totalItensSemST === 1 ? 'item' : 'itens'}</span>
+                  </div>
+                </div>
+
+                {dasCalcProdutos.deducaoICMS > 0 && (
+                  <div className="csosn-economia">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                    </svg>
+                    <span>Economia com ST: <strong>{formatCurrency(dasCalcProdutos.deducaoICMS)}</strong> de ICMS já recolhido</span>
+                  </div>
+                )}
+
+                {csosnsUnicos.length > 0 && (
+                  <div className="csosn-tags">
+                    <span className="csosn-tags-label">CSOSNs encontrados:</span>
+                    {csosnsUnicos.map(c => (
+                      <span key={c} className={`csosn-tag ${['201','202','203','500'].includes(c) ? 'csosn-tag-st' : 'csosn-tag-normal'}`}>
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Barra proporcional ST vs Normal */}
+                <div className="chart-container" style={{borderTop: 'none', marginTop: '0.5rem', paddingTop: '0'}}>
+                  <label className="result-label" style={{display: 'block', marginBottom: '0.5rem'}}>Proporção ST vs Normal</label>
+                  <div className="chart-bar-bg">
+                    <div className="chart-segment" style={{ width: `${(totalComST / (totalComST + totalSemST)) * 100}%`, backgroundColor: '#f59e0b' }}></div>
+                    <div className="chart-segment" style={{ width: `${(totalSemST / (totalComST + totalSemST)) * 100}%`, backgroundColor: '#6366f1' }}></div>
+                  </div>
+                  <div className="chart-legend">
+                    <div className="legend-item">
+                      <div className="legend-color" style={{ backgroundColor: '#f59e0b' }}></div>
+                      <span>Com ST ({Math.round((totalComST / (totalComST + totalSemST)) * 100)}%)</span>
+                    </div>
+                    <div className="legend-item">
+                      <div className="legend-color" style={{ backgroundColor: '#6366f1' }}></div>
+                      <span>Sem ST ({Math.round((totalSemST / (totalComST + totalSemST)) * 100)}%)</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
