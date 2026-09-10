@@ -73,7 +73,7 @@ export const parseInvoiceXml = (xmlString) => {
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(xmlString, "text/xml");
 
-    const parserError = xmlDoc.querySelector("parsererror");
+    const parserError = xmlDoc.getElementsByTagName("parsererror")[0];
     if (parserError) {
       throw new Error("Erro ao interpretar arquivo XML.");
     }
@@ -88,8 +88,11 @@ export const parseInvoiceXml = (xmlString) => {
                  || xmlDoc.getElementsByTagName("chNFe")[0]?.textContent;
     }
 
-    let numero = xmlDoc.getElementsByTagName("nNF")[0]?.textContent;
-    let serie = xmlDoc.getElementsByTagName("serie")[0]?.textContent;
+    const ide = infNFe?.getElementsByTagName("ide")[0];
+    const infInut = xmlDoc.getElementsByTagName("infInut")[0];
+    const identificationNode = ide || infInut;
+    let numero = ide?.getElementsByTagName("nNF")[0]?.textContent;
+    let serie = identificationNode?.getElementsByTagName("serie")[0]?.textContent;
 
     if (!numero) {
       numero = xmlDoc.getElementsByTagName("Numero")[0]?.textContent;
@@ -110,6 +113,28 @@ export const parseInvoiceXml = (xmlString) => {
     const n = numero ? parseInt(numero, 10) : null;
     const s = serie || "Única";
 
+    const hasAccessKey = /^\d{44}$/.test(chaveAcesso || '');
+    const emit = infNFe?.getElementsByTagName("emit")[0];
+    const prestador = xmlDoc.getElementsByTagName("PrestadorServico")[0]
+                   || xmlDoc.getElementsByTagName("Prestador")[0];
+    const issuerNode = emit || infInut || prestador;
+    const dataEmissao = ide?.getElementsByTagName("dhEmi")[0]?.textContent
+                     || ide?.getElementsByTagName("dEmi")[0]?.textContent
+                     || (!infNFe && !infInut ? xmlDoc.getElementsByTagName("DataEmissao")[0]?.textContent : null)
+                     || null;
+    const emissionMonth = dataEmissao?.match(/^(\d{4})-(0[1-9]|1[0-2])/);
+    const identification = {
+      dataEmissao,
+      aamm: emissionMonth ? emissionMonth[1].slice(2) + emissionMonth[2]
+        : hasAccessKey ? chaveAcesso.slice(2, 6) : null,
+      emitente: hasAccessKey ? chaveAcesso.slice(6, 20)
+        : issuerNode?.getElementsByTagName("CNPJ")[0]?.textContent
+          || issuerNode?.getElementsByTagName("CPF")[0]?.textContent || null,
+      modelo: hasAccessKey ? chaveAcesso.slice(20, 22)
+        : identificationNode?.getElementsByTagName("mod")[0]?.textContent
+          || (prestador ? 'NFS-e' : null),
+    };
+
     // Detectar Inutilização de numeração (procInutNFe)
     // Esses XMLs possuem <nNFIni> e <nNFFin> indicando o intervalo inutilizado
     const nNFIni = xmlDoc.getElementsByTagName("nNFIni")[0]?.textContent;
@@ -117,7 +142,12 @@ export const parseInvoiceXml = (xmlString) => {
     if (nNFIni && nNFFin) {
       const iniNum = parseInt(nNFIni, 10);
       const finNum = parseInt(nNFFin, 10);
+
+      // O ano da numeração inutilizada é independente da data do protocolo.
+      const anoInutilizacao = infInut?.getElementsByTagName("ano")[0]?.textContent || null;
+
       return {
+        ...identification,
         type: "Inutilizada",
         value: 0,
         valorComST: 0,
@@ -130,6 +160,8 @@ export const parseInvoiceXml = (xmlString) => {
         isRemessa: false,
         isInutilizada: true,
         chave: null,
+        aamm: null,
+        anoInutilizacao,
         numero: iniNum,
         numeroIni: iniNum,
         numeroFin: finNum,
@@ -166,6 +198,7 @@ export const parseInvoiceXml = (xmlString) => {
 
     if (isCancelled) {
       return {
+        ...identification,
         type: "Cancelada",
         value: 0,
         valorComST: 0,
@@ -184,6 +217,7 @@ export const parseInvoiceXml = (xmlString) => {
 
     if (isRemessa) {
       return {
+        ...identification,
         type: "Remessa/Transf.",
         value: 0, // Ignoramos o valor para o faturamento base
         valorComST: 0,
@@ -220,6 +254,7 @@ export const parseInvoiceXml = (xmlString) => {
       }
 
       return {
+        ...identification,
         type: isDevolucao ? "Devolução (NF-e)" : "NF-e/NFC-e",
         value: valorTotal,
         valorComST: Math.round(valorComST * 100) / 100,
@@ -239,6 +274,7 @@ export const parseInvoiceXml = (xmlString) => {
     let valorServicos = xmlDoc.getElementsByTagName("ValorServicos")[0]?.textContent;
     if (valorServicos) {
       return {
+        ...identification,
         type: "NFS-e",
         value: parseFloat(valorServicos),
         valorComST: 0,

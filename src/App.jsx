@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
 import { parseInvoiceXml } from './utils/xmlParser';
+import { auditSequence } from './utils/sequenceAudit';
+import { mergeInvoiceImports } from './utils/invoiceImports';
 import { calcularSimplesNacional, calcularDasComST } from './utils/simplesNacional';
 import './index.css';
 
 function App() {
   const [files, setFiles] = useState(() => {
     const saved = localStorage.getItem('das_files');
-    return saved ? JSON.parse(saved) : [];
+    return saved ? mergeInvoiceImports(JSON.parse(saved)) : [];
   });
   const [rbt12, setRbt12] = useState(() => {
     const saved = localStorage.getItem('das_rbt12');
@@ -21,6 +23,9 @@ function App() {
     const saved = localStorage.getItem('das_anexo_servicos');
     return saved || 'anexo3';
   });
+  const [periodoRef, setPeriodoRef] = useState(() => {
+    return localStorage.getItem('das_periodo_ref') || '';
+  });
 
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -32,7 +37,8 @@ function App() {
     localStorage.setItem('das_rbt12', rbt12);
     localStorage.setItem('das_anexo', anexo);
     localStorage.setItem('das_anexo_servicos', anexoServicos);
-  }, [files, rbt12, anexo, anexoServicos]);
+    localStorage.setItem('das_periodo_ref', periodoRef);
+  }, [files, rbt12, anexo, anexoServicos, periodoRef]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -44,127 +50,98 @@ function App() {
     setIsDragging(false);
   };
 
+  // Helper: processa o texto de um XML e empurra resultado para newFiles
+  const processXmlText = (text, name, newFiles) => {
+    try {
+      const data = parseInvoiceXml(text);
+      newFiles.push({
+        id: crypto.randomUUID(),
+        name,
+        type: data.type,
+        value: data.value,
+        valorComST: data.valorComST || 0,
+        valorSemST: data.valorSemST || 0,
+        itensComST: data.itensComST || 0,
+        itensSemST: data.itensSemST || 0,
+        csosns: data.csosns || [],
+        isCancelled: data.isCancelled,
+        isDevolucao: data.isDevolucao,
+        isRemessa: data.isRemessa,
+        isInutilizada: data.isInutilizada || false,
+        isDuplicada: false,
+        chave: data.chave,
+        aamm: data.aamm || null,
+        dataEmissao: data.dataEmissao || null,
+        emitente: data.emitente || null,
+        modelo: data.modelo || null,
+        anoInutilizacao: data.anoInutilizacao || null,
+        numero: data.numero,
+        numeroIni: data.numeroIni || null,
+        numeroFin: data.numeroFin || null,
+        serie: data.serie,
+        error: null,
+      });
+    } catch (err) {
+      newFiles.push({ id: crypto.randomUUID(), name, error: err.message || 'Erro ao ler o arquivo.' });
+    }
+  };
+
+  // Helper: extrai todos os XMLs de um JSZip (recursivo para ZIPs dentro de ZIPs)
+  const extractZipEntries = async (zip, newFiles) => {
+    const promises = [];
+    zip.forEach((relativePath, entry) => {
+      if (entry.dir) return;
+      const lowerPath = relativePath.toLowerCase();
+      if (lowerPath.endsWith('.xml')) {
+        promises.push(
+          entry.async('text').then(text => {
+            const name = relativePath.split('/').pop();
+            processXmlText(text, name, newFiles);
+          })
+        );
+      } else if (lowerPath.endsWith('.zip')) {
+        // ZIP aninhado: extrai como ArrayBuffer e processa recursivamente
+        promises.push(
+          entry.async('arraybuffer').then(async (buf) => {
+            try {
+              const innerZip = await JSZip.loadAsync(buf);
+              await extractZipEntries(innerZip, newFiles);
+            } catch {
+              const name = relativePath.split('/').pop();
+              newFiles.push({ id: crypto.randomUUID(), name, error: 'Erro ao descompactar ZIP interno.' });
+            }
+          })
+        );
+      }
+    });
+    await Promise.all(promises);
+  };
+
   const processFiles = async (fileList) => {
     setIsProcessing(true);
-    
-    setFiles(prevFiles => {
-      // Usamos apenas o return state update no final para React
-      return prevFiles;
-    });
 
     const newFiles = [];
-    const currentKeys = new Set(files.filter(f => f.chave).map(f => f.chave));
-    const currentNames = new Set(files.map(f => f.name));
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      
-      if (file.name.endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed') {
+      const isZip = file.name.endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
+
+      if (isZip) {
         try {
           const zip = await JSZip.loadAsync(file);
-          const zipPromises = [];
-          
-          zip.forEach((relativePath, zipEntry) => {
-            if (!zipEntry.dir && relativePath.toLowerCase().endsWith('.xml')) {
-              zipPromises.push(
-                zipEntry.async('text').then((text) => {
-                  try {
-                    const data = parseInvoiceXml(text);
-                    const name = zipEntry.name.split('/').pop();
-                    
-                    let isDuplicada = false;
-                    if (data.chave) {
-                      if (currentKeys.has(data.chave)) isDuplicada = true;
-                      else currentKeys.add(data.chave);
-                    } else if (currentNames.has(name)) {
-                      isDuplicada = true;
-                    } else {
-                      currentNames.add(name);
-                    }
-
-                    newFiles.push({
-                      id: crypto.randomUUID(),
-                      name: name,
-                      type: isDuplicada ? "Nota Duplicada" : data.type,
-                      value: data.value,
-                      valorComST: data.valorComST || 0,
-                      valorSemST: data.valorSemST || 0,
-                      itensComST: data.itensComST || 0,
-                      itensSemST: data.itensSemST || 0,
-                      csosns: data.csosns || [],
-                      isCancelled: data.isCancelled,
-                      isDevolucao: data.isDevolucao,
-                      isRemessa: data.isRemessa,
-                      isInutilizada: data.isInutilizada || false,
-                      isDuplicada: isDuplicada,
-                      chave: data.chave,
-                      numero: data.numero,
-                      numeroIni: data.numeroIni || null,
-                      numeroFin: data.numeroFin || null,
-                      serie: data.serie,
-                      error: isDuplicada ? "Esta nota já foi processada." : null
-                    });
-                  } catch (err) {
-                    newFiles.push({ id: crypto.randomUUID(), name: zipEntry.name.split('/').pop(), error: err.message || "Erro ao ler o arquivo." });
-                  }
-                })
-              );
-            }
-          });
-          
-          await Promise.all(zipPromises);
-        } catch (error) {
-          newFiles.push({ id: crypto.randomUUID(), name: file.name, error: "Erro ao descompactar arquivo ZIP." });
+          await extractZipEntries(zip, newFiles);
+        } catch {
+          newFiles.push({ id: crypto.randomUUID(), name: file.name, error: 'Erro ao descompactar arquivo ZIP.' });
         }
-      } 
-      else if (file.type === "text/xml" || file.name.endsWith('.xml')) {
-        try {
-          const text = await file.text();
-          const data = parseInvoiceXml(text);
-          const name = file.name;
-
-          let isDuplicada = false;
-          if (data.chave) {
-            if (currentKeys.has(data.chave)) isDuplicada = true;
-            else currentKeys.add(data.chave);
-          } else if (currentNames.has(name)) {
-            isDuplicada = true;
-          } else {
-            currentNames.add(name);
-          }
-
-          newFiles.push({
-            id: crypto.randomUUID(),
-            name: name,
-            type: isDuplicada ? "Nota Duplicada" : data.type,
-            value: data.value,
-            valorComST: data.valorComST || 0,
-            valorSemST: data.valorSemST || 0,
-            itensComST: data.itensComST || 0,
-            itensSemST: data.itensSemST || 0,
-            csosns: data.csosns || [],
-            isCancelled: data.isCancelled,
-            isDevolucao: data.isDevolucao,
-            isRemessa: data.isRemessa,
-            isInutilizada: data.isInutilizada || false,
-            isDuplicada: isDuplicada,
-            chave: data.chave,
-            numero: data.numero,
-            numeroIni: data.numeroIni || null,
-            numeroFin: data.numeroFin || null,
-            serie: data.serie,
-            error: isDuplicada ? "Esta nota já foi processada." : null
-          });
-        } catch (err) {
-          newFiles.push({ id: crypto.randomUUID(), name: file.name, error: err.message || "Erro ao ler o arquivo." });
-        }
-      } 
-      else {
-        newFiles.push({ id: crypto.randomUUID(), name: file.name, error: "Apenas arquivos XML ou ZIP são permitidos." });
+      } else if (file.type === 'text/xml' || file.name.endsWith('.xml')) {
+        const text = await file.text();
+        processXmlText(text, file.name, newFiles);
+      } else {
+        newFiles.push({ id: crypto.randomUUID(), name: file.name, error: 'Apenas arquivos XML ou ZIP são permitidos.' });
       }
     }
 
-    setFiles((prev) => [...prev, ...newFiles]);
+    setFiles((prev) => mergeInvoiceImports(prev, newFiles));
     setIsProcessing(false);
   };
 
@@ -197,66 +174,9 @@ function App() {
     window.print();
   };
 
-  // Lógica de Auditoria de Sequência
-  const checkSequence = () => {
-    // Usamos notas válidas e também as canceladas (pois nota cancelada tapa buraco)
-    const filesToAudit = files.filter(f => !f.error && !f.isDuplicada && f.numero != null);
-    
-    // Agrupar por Tipo e Série
-    const groups = {};
-    filesToAudit.forEach(f => {
-      const isNfe = f.type.includes('NF-e') || f.type.includes('Cancelada') || f.type.includes('Devolução') || f.type.includes('Remessa') || f.type.includes('Inutilizada');
-      const key = `${isNfe ? 'NF-e' : 'NFS-e'} - Série ${f.serie}`;
-      if (!groups[key]) groups[key] = [];
-      // Inutilizadas cobrem um intervalo de números
-      if (f.isInutilizada && f.numeroIni != null && f.numeroFin != null) {
-        for (let num = f.numeroIni; num <= f.numeroFin; num++) {
-          groups[key].push(num);
-        }
-      } else {
-        groups[key].push(f.numero);
-      }
-    });
-
-    const gapsReport = [];
-    
-    Object.keys(groups).forEach(key => {
-      const nums = groups[key].sort((a, b) => a - b);
-      if (nums.length < 2) return; // Não dá pra auditar com 1 nota só
-      
-      const missing = [];
-      let min = nums[0];
-      let max = nums[nums.length - 1];
-      
-      for (let i = min; i <= max; i++) {
-        if (!nums.includes(i)) {
-          missing.push(i);
-        }
-      }
-      
-      if (missing.length > 0) {
-        // Agrupar sequências pra ficar bonito (ex: 4,5,6 virar 4-6)
-        let ranges = [];
-        let rangeStart = missing[0];
-        let prev = missing[0];
-        
-        for (let i = 1; i <= missing.length; i++) {
-          if (missing[i] === prev + 1) {
-            prev = missing[i];
-          } else {
-            ranges.push(rangeStart === prev ? `${rangeStart}` : `${rangeStart} a ${prev}`);
-            rangeStart = missing[i];
-            prev = missing[i];
-          }
-        }
-        gapsReport.push({ group: key, missing: ranges.join(', ') });
-      }
-    });
-
-    return gapsReport;
-  };
-
-  const gaps = checkSequence();
+  const audit = auditSequence(files, periodoRef);
+  const { gaps } = audit;
+  const auditPeriodLabel = audit.periodo ? audit.periodo.split('-').reverse().join('/') : null;
   const validFiles = files.filter((f) => !f.error && !f.isCancelled && !f.isDuplicada && !f.isInutilizada);
   
   const totalProdutosNormal = validFiles.filter(f => f.type.includes('NF-e') && !f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
@@ -419,6 +339,40 @@ function App() {
               </div>
             </div>
 
+            <div className="input-group">
+              <label htmlFor="periodoRef">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{verticalAlign: 'middle', marginRight: '0.3rem'}}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                Mês de Referência da Auditoria
+              </label>
+              <div className="input-wrapper" style={{position: 'relative'}}>
+                <input
+                  id="periodoRef"
+                  type="month"
+                  value={periodoRef}
+                  onChange={(e) => setPeriodoRef(e.target.value)}
+                  style={{width: '100%', paddingRight: periodoRef ? '2.5rem' : undefined}}
+                />
+                {periodoRef && (
+                  <button
+                    onClick={() => setPeriodoRef('')}
+                    title="Limpar filtro (detectar automaticamente)"
+                    style={{
+                      position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)',
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: 'var(--text-secondary)', padding: '0.25rem', lineHeight: 1,
+                    }}
+                  >
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                  </button>
+                )}
+              </div>
+              {!periodoRef && (
+                <p style={{fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.25rem'}}>
+                  Sem filtro: usa o mês de emissão mais recente das notas.
+                </p>
+              )}
+            </div>
+
             <div className="anexo-grid">
               <div className="input-group">
                 <label htmlFor="anexo">
@@ -539,17 +493,72 @@ function App() {
                   </svg>
                   Auditoria de Sequência
                 </h4>
+                <p style={{fontSize: '0.8rem', marginBottom: '0.5rem'}}>
+                  {auditPeriodLabel ? `Mês auditado: ${auditPeriodLabel}. ` : 'Mês de emissão não identificado. '}
+                  A conferência usa notas do mesmo emitente, modelo e série.
+                </p>
+                {audit.ignoradas > 0 && (
+                  <p style={{fontSize: '0.8rem', color: '#f59e0b', marginBottom: '0.5rem'}}>
+                    {audit.ignoradas} arquivo(s) sem dados suficientes para conferir a sequência. Reimporte os XMLs desses documentos para completar a auditoria.
+                  </p>
+                )}
                 {gaps.length > 0 ? (
                   <div>
-                    <p style={{fontSize: '0.875rem', marginBottom: '0.5rem'}}>Atenção! Foram detectados pulos na sequência numérica:</p>
-                    <ul style={{fontSize: '0.75rem', color: 'var(--text-secondary)', paddingLeft: '1.25rem'}}>
+                    <p style={{fontSize: '0.875rem', marginBottom: '0.5rem'}}>Há números sem XML nos intervalos abaixo. A sequência sozinha não confirma a emissão nem o mês dessas notas:</p>
+                    <ul style={{fontSize: '0.75rem', color: 'var(--text-secondary)', paddingLeft: '1.25rem', marginBottom: '0.75rem'}}>
                       {gaps.map((gap, i) => (
-                        <li key={i}><strong>{gap.group}:</strong> Faltam notas {gap.missing}</li>
+                        <li key={i} style={{marginBottom: '0.2rem'}}>
+                          <strong>{gap.group}:</strong> Conferir números {gap.missing}
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            marginLeft: '0.5rem',
+                            padding: '0.1rem 0.45rem',
+                            borderRadius: '999px',
+                            backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                            color: 'var(--danger-color)',
+                            fontWeight: 700,
+                            fontSize: '0.7rem',
+                          }}>
+                            {gap.count} {gap.count === 1 ? 'número' : 'números'}
+                          </span>
+                          <div style={{fontSize: '0.7rem', marginTop: '0.2rem'}}>
+                            Emitente: {gap.emitente} · {auditPeriodLabel} · Entre as notas {gap.primeira} e {gap.ultima}
+                          </div>
+                          {gap.outrasSeries.length > 0 && (
+                            <div style={{fontSize: '0.75rem', marginTop: '0.4rem', color: '#f59e0b'}}>
+                              XMLs com esses números já foram importados em outra série:
+                              {' '}{gap.outrasSeries.slice(0, 10).map(n => `nº ${n.numero}, série ${n.serie}${n.periodo ? ` (${n.periodo.split('-').reverse().join('/')})` : ''}`).join('; ')}.
+                              {gap.outrasSeries.length > 10 && ` E mais ${gap.outrasSeries.length - 10} documento(s).`}
+                              {' '}Esses documentos não pertencem à sequência da série {gap.serie}.
+                            </div>
+                          )}
+                        </li>
                       ))}
                     </ul>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0.5rem 0.75rem',
+                      borderRadius: '0.5rem',
+                      backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                    }}>
+                      <span style={{fontSize: '0.8rem', fontWeight: 600, color: 'var(--danger-color)'}}>Total de números a conferir</span>
+                      <span style={{
+                        fontSize: '1.1rem',
+                        fontWeight: 800,
+                        color: 'var(--danger-color)',
+                        letterSpacing: '-0.02em',
+                      }}>
+                        {gaps.reduce((acc, g) => acc + g.count, 0)}
+                      </span>
+                    </div>
                   </div>
                 ) : (
-                  <p style={{fontSize: '0.875rem', color: 'var(--text-secondary)'}}>Nenhuma nota foi pulada na sequência enviada.</p>
+                  <p style={{fontSize: '0.875rem', color: 'var(--text-secondary)'}}>{audit.gruposAuditados > 0 ? 'Nenhuma lacuna encontrada entre as notas do mês auditado.' : 'Não há pelo menos duas notas distintas do mês na mesma sequência para conferir.'}</p>
                 )}
               </div>
             )}
