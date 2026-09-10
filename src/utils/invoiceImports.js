@@ -11,7 +11,9 @@ function documentKey(file) {
       year(file.anoInutilizacao), numeric(file.numeroIni), numeric(file.numeroFin)];
     return fields.every(Boolean) ? JSON.stringify(['inut', ...fields]) : null;
   }
-  return file.chave ? JSON.stringify([kind(file), normalized(file.chave)]) : null;
+  const chave = normalized(file.chave);
+  // Nota e evento de cancelamento representam a mesma NF-e.
+  return chave ? JSON.stringify([/^\d{44}$/.test(chave) ? 'NFe' : kind(file), chave]) : null;
 }
 
 function compatibleLegacyRecord(a, b) {
@@ -32,8 +34,16 @@ function mergeRecord(previous, incoming) {
   const merged = incoming.isDuplicada
     ? { ...previous }
     : { ...previous, ...incoming, id: previous.id, isDuplicada: false, error: null };
-  for (const field of ['emitente', 'modelo', 'serie', 'anoInutilizacao', 'dataEmissao', 'aamm', 'numero', 'numeroIni', 'numeroFin']) {
+  for (const field of ['emitente', 'modelo', 'serie', 'anoInutilizacao', 'dataEmissao', 'aamm', 'numero', 'numeroIni', 'numeroFin', 'tpNF', 'finNFe', 'naturezaOperacao']) {
     merged[field] = incoming[field] ?? previous[field];
+  }
+  if (previous.isCancelled || incoming.isCancelled) {
+    Object.assign(merged, {
+      type: 'Cancelada', isCancelled: true, isDevolucao: false, isRemessa: false,
+      isDevolucaoFornecedor: false, devolucaoSemClassificacao: false,
+      isDuplicada: false, error: null, value: 0, valorComST: 0, valorSemST: 0,
+      itensComST: 0, itensSemST: 0, csosns: [],
+    });
   }
   return merged;
 }

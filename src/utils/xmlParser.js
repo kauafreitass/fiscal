@@ -1,3 +1,5 @@
+import { classifyInvoice } from './invoiceClassification.js';
+
 // CSOSNs que indicam Substituição Tributária (ICMS já recolhido)
 const CSOSN_COM_ST = new Set(['201', '202', '203', '500']);
 
@@ -125,6 +127,9 @@ export const parseInvoiceXml = (xmlString) => {
     const emissionMonth = dataEmissao?.match(/^(\d{4})-(0[1-9]|1[0-2])/);
     const identification = {
       dataEmissao,
+      tpNF: ide?.getElementsByTagName("tpNF")[0]?.textContent?.trim() || null,
+      finNFe: ide?.getElementsByTagName("finNFe")[0]?.textContent?.trim() || null,
+      naturezaOperacao: ide?.getElementsByTagName("natOp")[0]?.textContent?.trim() || null,
       aamm: emissionMonth ? emissionMonth[1].slice(2) + emissionMonth[2]
         : hasAccessKey ? chaveAcesso.slice(2, 6) : null,
       emitente: hasAccessKey ? chaveAcesso.slice(6, 20)
@@ -172,11 +177,17 @@ export const parseInvoiceXml = (xmlString) => {
     const finNFe = xmlDoc.getElementsByTagName("finNFe")[0]?.textContent;
     const isDevolucao = (finNFe === "4");
 
-    const cStat = xmlDoc.getElementsByTagName("cStat")[0]?.textContent;
-    const descEvento = xmlDoc.getElementsByTagName("descEvento")[0]?.textContent;
-    const isCancelled = (cStat === "101") || 
-                        (cStat === "135" && descEvento?.includes("Cancelamento")) ||
-                        xmlDoc.getElementsByTagName("retCancNFe").length > 0;
+    const text = (node, tag) => node.getElementsByTagName(tag)[0]?.textContent?.trim();
+    const sameKey = node => !text(node, 'chNFe') || text(node, 'chNFe') === chaveAcesso;
+    const cancellationType = node => ['110111', '110112'].includes(text(node, 'tpEvento')) ||
+      /cancelamento/i.test(text(node, 'descEvento') || text(node, 'xEvento') || '');
+    const requestIsCancellation = Array.from(xmlDoc.getElementsByTagName('evento')).some(node => sameKey(node) && cancellationType(node));
+    const cancelledEvent = Array.from(xmlDoc.getElementsByTagName('retEvento')).some(node =>
+      sameKey(node) && ['135', '155'].includes(text(node, 'cStat')) &&
+      (cancellationType(node) || (!text(node, 'tpEvento') && !text(node, 'xEvento') && requestIsCancellation)));
+    const cancelledProtocol = ['infProt', 'infCanc'].some(tag =>
+      Array.from(xmlDoc.getElementsByTagName(tag)).some(node => sameKey(node) && ['101', '151', '155'].includes(text(node, 'cStat'))));
+    const isCancelled = cancelledEvent || cancelledProtocol;
 
     // Detectar Remessa / Transferência
     const natOpNode = xmlDoc.getElementsByTagName("natOp")[0];
@@ -253,7 +264,7 @@ export const parseInvoiceXml = (xmlString) => {
         valorSemST = valorTotal * (1 - propST);
       }
 
-      return {
+      return classifyInvoice({
         ...identification,
         type: isDevolucao ? "Devolução (NF-e)" : "NF-e/NFC-e",
         value: valorTotal,
@@ -268,7 +279,7 @@ export const parseInvoiceXml = (xmlString) => {
         chave: chaveAcesso,
         numero: n,
         serie: s
-      };
+      });
     }
 
     let valorServicos = xmlDoc.getElementsByTagName("ValorServicos")[0]?.textContent;

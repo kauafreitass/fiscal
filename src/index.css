@@ -390,13 +390,25 @@ body {
 /* Print Media Query */
 @media print {
   body { background: white; color: black; display: block; padding: 0; margin: 0; }
-  .glass-panel { box-shadow: none; border: 1px solid #ccc; background: white; padding: 1rem; margin-bottom: 1rem; page-break-inside: avoid; }
-  .dropzone, .btn, .remove-btn, .header-actions button { display: none; }
-  .title { background: none; color: black; -webkit-text-fill-color: black; }
-  .subtitle, .text-secondary { color: #555; }
-  .file-item { border-color: #eee; background: #fafafa; }
+  #root { max-width: none; }
+  .header-actions, .import-panel, .report-panel button { display: none !important; }
+  .main-content { display: block; }
+  .report-panel {
+    --text-primary: #111;
+    --text-secondary: #555;
+    --border-color: #ccc;
+    color: var(--text-primary);
+    width: 100%;
+    box-shadow: none;
+    backdrop-filter: none;
+    border: 1px solid #ccc;
+    background: white;
+    padding: 1rem;
+    break-inside: auto;
+  }
+  .report-panel .results-card, .report-panel .breakdown-card,
+  .report-panel .csosn-card, .report-panel .input-group { break-inside: avoid; }
   .results-card { background: #f5f5f5; border: 1px solid #ddd; }
   .result-value.tax { background: none; color: black; -webkit-text-fill-color: black; }
-  .file-list { max-height: none; overflow: visible; }
   .input-wrapper input, .input-wrapper select { border: none; background: transparent; padding: 0; color: black; }
 }

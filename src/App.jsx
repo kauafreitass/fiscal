@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import { parseInvoiceXml } from './utils/xmlParser';
 import { auditSequence } from './utils/sequenceAudit';
 import { mergeInvoiceImports } from './utils/invoiceImports';
+import { summarizeInvoices } from './utils/invoiceTotals';
 import { calcularSimplesNacional, calcularDasComST } from './utils/simplesNacional';
 import './index.css';
 
@@ -66,6 +67,10 @@ function App() {
         csosns: data.csosns || [],
         isCancelled: data.isCancelled,
         isDevolucao: data.isDevolucao,
+        isDevolucaoFornecedor: data.isDevolucaoFornecedor || false,
+        tpNF: data.tpNF || null,
+        finNFe: data.finNFe || null,
+        naturezaOperacao: data.naturezaOperacao || null,
         isRemessa: data.isRemessa,
         isInutilizada: data.isInutilizada || false,
         isDuplicada: false,
@@ -161,7 +166,7 @@ function App() {
   };
 
   const removeFile = (id) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+    setFiles((prev) => mergeInvoiceImports(prev).filter((f) => f.id !== id));
   };
 
   const clearAllFiles = () => {
@@ -177,14 +182,10 @@ function App() {
   const audit = auditSequence(files, periodoRef);
   const { gaps } = audit;
   const auditPeriodLabel = audit.periodo ? audit.periodo.split('-').reverse().join('/') : null;
-  const validFiles = files.filter((f) => !f.error && !f.isCancelled && !f.isDuplicada && !f.isInutilizada);
-  
-  const totalProdutosNormal = validFiles.filter(f => f.type.includes('NF-e') && !f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
-  const totalProdutosDevolucao = validFiles.filter(f => f.isDevolucao).reduce((acc, f) => acc + f.value, 0);
-  
+  const { classifiedFiles, validFiles, nfesValidas, totalProdutosNormal, totalProdutosDevolucao,
+    totalServicos, devolucoesComST, devolucoesPendentes } = summarizeInvoices(files);
   const totalProdutos = totalProdutosNormal - totalProdutosDevolucao;
-  const totalServicos = validFiles.filter(f => f.type.includes('NFS-e')).reduce((acc, f) => acc + f.value, 0);
-  
+
   const totalFaturamento = Math.max(0, totalProdutos + totalServicos);
 
   // --- Cálculo separado: Produtos (NF-e) ---
@@ -192,12 +193,10 @@ function App() {
   const receitaProdutosBase = Math.max(0, totalProdutos);
 
   // Segregar receita com ST e sem ST
-  const nfesValidas = validFiles.filter(f => f.type.includes('NF-e') && !f.isDevolucao);
   const totalComST = nfesValidas.reduce((acc, f) => acc + (f.valorComST || 0), 0);
   const totalSemST = nfesValidas.reduce((acc, f) => acc + (f.valorSemST || 0), 0);
   
   // Devoluções de ST também devem ser abatidas
-  const devolucoesComST = validFiles.filter(f => f.isDevolucao).reduce((acc, f) => acc + (f.valorComST || 0), 0);
   const receitaComSTLiquida = Math.max(0, totalComST - devolucoesComST);
 
   // DAS de Produtos com dedução de ICMS-ST
@@ -245,7 +244,7 @@ function App() {
       </div>
 
       <div className="main-content">
-        <div className="glass-panel">
+        <div className="glass-panel import-panel">
           <div className={`dropzone ${isDragging ? 'active' : ''}`} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={() => fileInputRef.current.click()}>
             {isProcessing ? (
               <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem'}}>
@@ -289,7 +288,7 @@ function App() {
               <div className="empty-state">Nenhum arquivo enviado ainda.</div>
             ) : (
               <ul className="file-list">
-                {files.map((file) => (
+                {classifiedFiles.map((file) => (
                   <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''} ${file.isInutilizada ? 'inutilizada' : ''}`}>
                     <div className="file-info">
                       <span className="file-name" title={file.name}>
@@ -307,7 +306,7 @@ function App() {
                     <div className="file-actions">
                       {!file.error && !file.isCancelled && !file.isInutilizada && (
                         <span className="file-value" style={{ marginRight: '1rem' }}>
-                          {file.isDevolucao ? '-' : ''}{formatCurrency(file.value)}
+                          {file.isDevolucao && !file.isDevolucaoFornecedor && !file.devolucaoSemClassificacao ? '-' : ''}{formatCurrency(file.value)}
                         </span>
                       )}
                       {file.isCancelled && (
@@ -329,7 +328,7 @@ function App() {
           </div>
         </div>
 
-        <div className="glass-panel">
+        <div className="glass-panel report-panel">
           <div className="settings-panel">
             <div className="input-group">
               <label htmlFor="rbt12">Receita Bruta 12 Meses (RBT12)</label>
@@ -401,6 +400,12 @@ function App() {
               </div>
             </div>
 
+            {devolucoesPendentes.length > 0 && (
+              <p style={{color: '#f59e0b', fontSize: '0.8rem'}}>
+                {devolucoesPendentes.length} devolução(ões) importada(s) anteriormente sem identificação de entrada ou saída.
+                Reimporte os XMLs para identificar o tipo. Esses valores não estão sendo abatidos.
+              </p>
+            )}
             <div className="results-card">
               <div className="result-row">
                 <span className="result-label">Notas Fiscais Válidas</span>
