@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import JSZip from 'jszip';
 import { parseInvoiceXml } from './utils/xmlParser';
 import { auditSequence } from './utils/sequenceAudit';
@@ -7,29 +7,83 @@ import { summarizeInvoices } from './utils/invoiceTotals';
 import { calcularSimplesNacional, calcularDasComST } from './utils/simplesNacional';
 import './index.css';
 
+// Fora do componente: função pura, não precisa ser recriada a cada render
+const normalizeStr = (s) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+// Componente de item da lista memoizado: só re-renderiza se seus dados mudarem
+const FileItem = memo(function FileItem({ file, onRemove, formatCurrency }) {
+  return (
+    <li className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''} ${file.isInutilizada ? 'inutilizada' : ''}`}>
+      <div className="file-info">
+        <span className="file-name" title={file.name}>
+          {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.isInutilizada && file.numeroFin > file.numeroIni ? `${file.numeroIni}-${file.numeroFin}` : file.numero}</span>}
+          {file.name}
+        </span>
+        <span className="file-type">
+          {file.error ? file.error : file.type}
+          {file.itensComST > 0 && !file.error && <span className="badge-st">ST</span>}
+          {file.csosns && file.csosns.length > 0 && !file.error && (
+            <span className="badge-csosn">CSOSN: {file.csosns.join(', ')}</span>
+          )}
+        </span>
+      </div>
+      <div className="file-actions">
+        {!file.error && !file.isCancelled && !file.isInutilizada && (
+          <span className="file-value" style={{ marginRight: '1rem' }}>
+            {file.isDevolucao && !file.isDevolucaoFornecedor && !file.devolucaoSemClassificacao ? '-' : ''}{formatCurrency(file.value)}
+          </span>
+        )}
+        {file.isCancelled && (
+          <span className="file-value" style={{ marginRight: '1rem' }}>Cancelada</span>
+        )}
+        {file.isInutilizada && (
+          <span className="file-value" style={{ marginRight: '1rem' }}>Inutilizada</span>
+        )}
+        <button className="remove-btn" onClick={() => onRemove(file.id)} title="Remover arquivo">
+          <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+          </svg>
+        </button>
+      </div>
+    </li>
+  );
+});
+
 function App() {
   const [files, setFiles] = useState(() => {
-    const saved = localStorage.getItem('das_files');
-    return saved ? mergeInvoiceImports(JSON.parse(saved)) : [];
+    try {
+      const saved = localStorage.getItem('das_files');
+      return saved ? mergeInvoiceImports(JSON.parse(saved)) : [];
+    } catch {
+      localStorage.removeItem('das_files');
+      return [];
+    }
   });
   const [rbt12, setRbt12] = useState(() => {
-    const saved = localStorage.getItem('das_rbt12');
-    return saved ? parseFloat(saved) : 0;
+    try {
+      const saved = localStorage.getItem('das_rbt12');
+      return saved ? parseFloat(saved) : 0;
+    } catch { return 0; }
   });
   const [anexo, setAnexo] = useState(() => {
-    const saved = localStorage.getItem('das_anexo');
-    return saved || 'anexo1';
+    try {
+      return localStorage.getItem('das_anexo') || 'anexo1';
+    } catch { return 'anexo1'; }
   });
   const [anexoServicos, setAnexoServicos] = useState(() => {
-    const saved = localStorage.getItem('das_anexo_servicos');
-    return saved || 'anexo3';
+    try {
+      return localStorage.getItem('das_anexo_servicos') || 'anexo3';
+    } catch { return 'anexo3'; }
   });
   const [periodoRef, setPeriodoRef] = useState(() => {
-    return localStorage.getItem('das_periodo_ref') || '';
+    try {
+      return localStorage.getItem('das_periodo_ref') || '';
+    } catch { return ''; }
   });
 
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef(null);
   const dirInputRef = useRef(null);
 
@@ -41,15 +95,22 @@ function App() {
     localStorage.setItem('das_periodo_ref', periodoRef);
   }, [files, rbt12, anexo, anexoServicos, periodoRef]);
 
-  const handleDragOver = (e) => {
+  // Debounce da pesquisa: só filtra 300ms após parar de digitar
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const handleDragOver = useCallback((e) => {
     e.preventDefault();
     setIsDragging(true);
-  };
+  }, []);
 
-  const handleDragLeave = (e) => {
+  const handleDragLeave = useCallback((e) => {
     e.preventDefault();
     setIsDragging(false);
-  };
+  }, []);
 
   // Helper: processa o texto de um XML e empurra resultado para newFiles
   const processXmlText = (text, name, newFiles) => {
@@ -165,68 +226,119 @@ function App() {
     e.target.value = null;
   };
 
-  const removeFile = (id) => {
+  const removeFile = useCallback((id) => {
     setFiles((prev) => mergeInvoiceImports(prev).filter((f) => f.id !== id));
-  };
+  }, []);
 
-  const clearAllFiles = () => {
+  const clearAllFiles = useCallback(() => {
     if (window.confirm("Deseja realmente limpar todos os arquivos?")) {
       setFiles([]);
     }
-  };
+  }, []);
 
-  const handlePrint = () => {
+  const handlePrint = useCallback(() => {
     window.print();
-  };
+  }, []);
 
-  const audit = auditSequence(files, periodoRef);
+  // ─── Todos os cálculos derivados em um único useMemo para evitar dependências cruzadas
+  const {
+    audit,
+    classifiedFiles,
+    validFiles,
+    nfesValidas,
+    totalProdutosDevolucao,
+    totalServicos,
+    devolucoesPendentes,
+    totalComST,
+    totalSemST,
+    totalItensComST,
+    totalItensSemST,
+    csosnsUnicos,
+    totalFaturamento,
+    receitaProdutosBase,
+    aliquotaProdutos,
+    aliquotaServicos,
+    dasCalcProdutos,
+    valorDasServicos,
+    valorDasTotal,
+    pctProdutos,
+    pctServicos,
+  } = useMemo(() => {
+    const auditResult = auditSequence(files, periodoRef);
+    const summary = summarizeInvoices(files);
+    const {
+      classifiedFiles, validFiles, nfesValidas,
+      totalProdutosNormal, totalProdutosDevolucao,
+      totalServicos, devolucoesComST, devolucoesPendentes,
+    } = summary;
+
+    // Totais ST
+    let comST = 0, semST = 0, itensComST = 0, itensSemST = 0;
+    const csosSet = new Set();
+    for (const f of nfesValidas) {
+      comST += f.valorComST || 0;
+      semST += f.valorSemST || 0;
+      itensComST += f.itensComST || 0;
+      itensSemST += f.itensSemST || 0;
+      (f.csosns || []).forEach(c => csosSet.add(c));
+    }
+
+    // Cálculos DAS
+    const totalProdutos = totalProdutosNormal - totalProdutosDevolucao;
+    const totalFaturamento = Math.max(0, totalProdutos + totalServicos);
+    const receitaProdutosBase = Math.max(0, totalProdutos);
+    const receitaComSTLiquida = Math.max(0, comST - devolucoesComST);
+    const aliqProd = calcularSimplesNacional(rbt12, anexo);
+    const aliqServ = calcularSimplesNacional(rbt12, anexoServicos);
+    const dasCalc = calcularDasComST(rbt12, anexo, receitaProdutosBase, receitaComSTLiquida);
+    const dasServ = totalServicos * aliqServ;
+    const dasTotal = Math.round((dasCalc.valorDas + Math.max(0, dasServ)) * 100) / 100;
+    const gross = totalProdutosNormal + totalServicos;
+
+    return {
+      audit: auditResult,
+      classifiedFiles, validFiles, nfesValidas,
+      totalProdutosNormal, totalProdutosDevolucao,
+      totalServicos, devolucoesComST, devolucoesPendentes,
+      totalComST: comST, totalSemST: semST,
+      totalItensComST: itensComST, totalItensSemST: itensSemST,
+      csosnsUnicos: Array.from(csosSet).sort(),
+      totalProdutos, totalFaturamento, receitaProdutosBase,
+      aliquotaProdutos: aliqProd, aliquotaServicos: aliqServ,
+      dasCalcProdutos: dasCalc, valorDasServicos: dasServ, valorDasTotal: dasTotal,
+      pctProdutos: gross > 0 ? (totalProdutosNormal / gross) * 100 : 0,
+      pctServicos: gross > 0 ? (totalServicos / gross) * 100 : 0,
+    };
+  }, [files, periodoRef, rbt12, anexo, anexoServicos]);
+
   const { gaps } = audit;
   const auditPeriodLabel = audit.periodo ? audit.periodo.split('-').reverse().join('/') : null;
-  const { classifiedFiles, validFiles, nfesValidas, totalProdutosNormal, totalProdutosDevolucao,
-    totalServicos, devolucoesComST, devolucoesPendentes } = summarizeInvoices(files);
-  const totalProdutos = totalProdutosNormal - totalProdutosDevolucao;
 
-  const totalFaturamento = Math.max(0, totalProdutos + totalServicos);
+  // Filtragem memoizada separada: depende de classifiedFiles + debouncedQuery
+  const filteredFiles = useMemo(() => {
+    const q = normalizeStr(debouncedQuery);
+    if (!q) return classifiedFiles;
+    return classifiedFiles.filter((f) =>
+      normalizeStr(f.name).includes(q) ||
+      normalizeStr(String(f.numero ?? '')).includes(q) ||
+      normalizeStr(f.type).includes(q) ||
+      normalizeStr(f.error).includes(q) ||
+      normalizeStr(f.naturezaOperacao).includes(q)
+    );
+  }, [classifiedFiles, debouncedQuery]);
 
-  // --- Cálculo separado: Produtos (NF-e) ---
-  const aliquotaProdutos = calcularSimplesNacional(rbt12, anexo);
-  const receitaProdutosBase = Math.max(0, totalProdutos);
-
-  // Segregar receita com ST e sem ST
-  const totalComST = nfesValidas.reduce((acc, f) => acc + (f.valorComST || 0), 0);
-  const totalSemST = nfesValidas.reduce((acc, f) => acc + (f.valorSemST || 0), 0);
-  
-  // Devoluções de ST também devem ser abatidas
-  const receitaComSTLiquida = Math.max(0, totalComST - devolucoesComST);
-
-  // DAS de Produtos com dedução de ICMS-ST
-  const dasCalcProdutos = calcularDasComST(rbt12, anexo, receitaProdutosBase, receitaComSTLiquida);
-
-  // --- Cálculo separado: Serviços (NFS-e) ---
-  const aliquotaServicos = calcularSimplesNacional(rbt12, anexoServicos);
-  const valorDasServicos = totalServicos * aliquotaServicos;
-
-  // --- Totais combinados ---
-  const valorDasTotal = Math.round((dasCalcProdutos.valorDas + Math.max(0, valorDasServicos)) * 100) / 100;
-
-  // Contagem de itens com ST
-  const totalItensComST = nfesValidas.reduce((acc, f) => acc + (f.itensComST || 0), 0);
-  const totalItensSemST = nfesValidas.reduce((acc, f) => acc + (f.itensSemST || 0), 0);
-
-  // CSOSNs encontrados em todas as notas
-  const todosCSOs = new Set();
-  nfesValidas.forEach(f => (f.csosns || []).forEach(c => todosCSOs.add(c)));
-  const csosnsUnicos = Array.from(todosCSOs).sort();
-
-  const grossTotal = totalProdutosNormal + totalServicos;
-  const pctProdutos = grossTotal > 0 ? (totalProdutosNormal / grossTotal) * 100 : 0;
-  const pctServicos = grossTotal > 0 ? (totalServicos / grossTotal) * 100 : 0;
-
-  // Nomes amigáveis dos anexos
+  // Nomes amigáveis dos anexos (objeto estático, referência estável)
   const nomeAnexo = { anexo1: 'Anexo I', anexo2: 'Anexo II', anexo3: 'Anexo III', anexo4: 'Anexo IV', anexo5: 'Anexo V' };
 
-  const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
-  const formatPercent = (value) => new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  // Formatadores memoizados: Intl.NumberFormat é caro de construir a cada render
+  const formatCurrency = useCallback(
+    (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value),
+    []
+  );
+  const formatPercent = useCallback(
+    (value) => new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value),
+    []
+  );
 
   return (
     <div className="app-container">
@@ -284,44 +396,42 @@ function App() {
               )}
             </h3>
 
+            {files.length > 0 && (
+              <div className="search-bar-wrapper">
+                <svg className="search-bar-icon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-4.35-4.35M17 11A6 6 0 105 11a6 6 0 0012 0z" />
+                </svg>
+                <input
+                  id="searchNotes"
+                  className="search-bar-input"
+                  type="text"
+                  placeholder="Buscar por nome, número, tipo..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button className="search-bar-clear" onClick={() => setSearchQuery('')} title="Limpar busca">
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            )}
+
             {files.length === 0 ? (
               <div className="empty-state">Nenhum arquivo enviado ainda.</div>
+            ) : filteredFiles.length === 0 ? (
+              <div className="empty-state">Nenhuma nota encontrada para <strong>&ldquo;{searchQuery}&rdquo;</strong>.</div>
             ) : (
               <ul className="file-list">
-                {classifiedFiles.map((file) => (
-                  <li key={file.id} className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''} ${file.isInutilizada ? 'inutilizada' : ''}`}>
-                    <div className="file-info">
-                      <span className="file-name" title={file.name}>
-                        {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.isInutilizada && file.numeroFin > file.numeroIni ? `${file.numeroIni}-${file.numeroFin}` : file.numero}</span>}
-                        {file.name}
-                      </span>
-                      <span className="file-type">
-                      {file.error ? file.error : file.type}
-                      {file.itensComST > 0 && !file.error && <span className="badge-st">ST</span>}
-                      {file.csosns && file.csosns.length > 0 && !file.error && (
-                        <span className="badge-csosn">CSOSN: {file.csosns.join(', ')}</span>
-                      )}
-                    </span>
-                    </div>
-                    <div className="file-actions">
-                      {!file.error && !file.isCancelled && !file.isInutilizada && (
-                        <span className="file-value" style={{ marginRight: '1rem' }}>
-                          {file.isDevolucao && !file.isDevolucaoFornecedor && !file.devolucaoSemClassificacao ? '-' : ''}{formatCurrency(file.value)}
-                        </span>
-                      )}
-                      {file.isCancelled && (
-                        <span className="file-value" style={{ marginRight: '1rem' }}>Cancelada</span>
-                      )}
-                      {file.isInutilizada && (
-                        <span className="file-value" style={{ marginRight: '1rem' }}>Inutilizada</span>
-                      )}
-                      <button className="remove-btn" onClick={() => removeFile(file.id)} title="Remover arquivo">
-                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                      </button>
-                    </div>
-                  </li>
+                {filteredFiles.map((file) => (
+                  <FileItem
+                    key={file.id}
+                    file={file}
+                    onRemove={removeFile}
+                    formatCurrency={formatCurrency}
+                  />
                 ))}
               </ul>
             )}
