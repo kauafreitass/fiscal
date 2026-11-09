@@ -37,6 +37,11 @@ function mergeRecord(previous, incoming) {
   for (const field of ['emitente', 'modelo', 'serie', 'anoInutilizacao', 'dataEmissao', 'aamm', 'numero', 'numeroIni', 'numeroFin', 'tpNF', 'finNFe', 'naturezaOperacao']) {
     merged[field] = incoming[field] ?? previous[field];
   }
+  const documents = new Map();
+  for (const document of [...(previous.xmlDocuments || []), ...(incoming.xmlDocuments || [])]) {
+    documents.set(document.key, document);
+  }
+  if (documents.size) merged.xmlDocuments = [...documents.values()];
   if (previous.isCancelled || incoming.isCancelled) {
     Object.assign(merged, {
       type: 'Cancelada', isCancelled: true, isDevolucao: false, isRemessa: false,

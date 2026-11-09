@@ -458,3 +458,15 @@ body {
   .result-value.tax { background: none; color: black; -webkit-text-fill-color: black; }
   .input-wrapper input, .input-wrapper select { border: none; background: transparent; padding: 0; color: black; }
 }
+
+.export-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.export-help { width: 100%; margin: 0; color: var(--text-secondary); font-size: 0.8rem; }
+.archive-message { margin-bottom: 1rem; color: var(--danger-color); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1rem; font-size: 0.85rem; }
+.selection-actions > span { color: var(--text-secondary); }
+.selection-label { display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.invoice-checkbox { flex: 0 0 auto; width: 1rem; height: 1rem; margin: 0; accent-color: var(--accent-color); cursor: pointer; }
+.file-item { gap: 0.75rem; }
+.file-info { min-width: 0; flex: 1; }
+.file-item:has(.invoice-checkbox:checked) { border-color: var(--accent-color); }

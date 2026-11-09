@@ -1,19 +1,26 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import JSZip from 'jszip';
+import { identifyXml, saveXmlDocuments, createInvoiceArchive } from './utils/invoiceArchive';
 import { parseInvoiceXml } from './utils/xmlParser';
 import { auditSequence } from './utils/sequenceAudit';
 import { mergeInvoiceImports } from './utils/invoiceImports';
 import { summarizeInvoices } from './utils/invoiceTotals';
+import { filterInvoices } from './utils/invoiceSearch';
 import { calcularSimplesNacional, calcularDasComST } from './utils/simplesNacional';
 import './index.css';
 
-// Fora do componente: função pura, não precisa ser recriada a cada render
-const normalizeStr = (s) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-
 // Componente de item da lista memoizado: só re-renderiza se seus dados mudarem
-const FileItem = memo(function FileItem({ file, onRemove, formatCurrency }) {
+const FileItem = memo(function FileItem({ file, onRemove, formatCurrency, selected, onSelect }) {
   return (
     <li className={`file-item ${file.error ? 'error' : ''} ${file.isCancelled ? 'cancelled' : ''} ${file.isDevolucao ? 'devolucao' : ''} ${file.isRemessa ? 'remessa' : ''} ${file.isDuplicada ? 'duplicada' : ''} ${file.isInutilizada ? 'inutilizada' : ''}`}>
+      <input
+        type="checkbox"
+        className="invoice-checkbox"
+        aria-label={`Selecionar nota ${file.numero ?? file.name}, série ${file.serie ?? 'única'}, ${file.name}`}
+        checked={selected}
+        disabled={Boolean(file.error)}
+        onChange={() => onSelect(file.id)}
+      />
       <div className="file-info">
         <span className="file-name" title={file.name}>
           {file.numero && <span style={{color: 'var(--text-secondary)', marginRight: '0.25rem'}}>#{file.isInutilizada && file.numeroFin > file.numeroIni ? `${file.numeroIni}-${file.numeroFin}` : file.numero}</span>}
@@ -83,6 +90,17 @@ function App() {
 
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const toggleSelection = useCallback((id) => {
+    setSelectedIds(previous => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const [archiveMessage, setArchiveMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef(null);
   const dirInputRef = useRef(null);
@@ -113,12 +131,15 @@ function App() {
   }, []);
 
   // Helper: processa o texto de um XML e empurra resultado para newFiles
-  const processXmlText = (text, name, newFiles) => {
+  const processXmlText = async (text, name, newFiles, documents, blob) => {
     try {
       const data = parseInvoiceXml(text);
+      const document = await identifyXml(blob, name);
+      documents.push(document);
       newFiles.push({
         id: crypto.randomUUID(),
         name,
+        xmlDocuments: [{ key: document.key, name }],
         type: data.type,
         value: data.value,
         valorComST: data.valorComST || 0,
@@ -153,16 +174,16 @@ function App() {
   };
 
   // Helper: extrai todos os XMLs de um JSZip (recursivo para ZIPs dentro de ZIPs)
-  const extractZipEntries = async (zip, newFiles) => {
+  const extractZipEntries = async (zip, newFiles, documents) => {
     const promises = [];
     zip.forEach((relativePath, entry) => {
       if (entry.dir) return;
       const lowerPath = relativePath.toLowerCase();
       if (lowerPath.endsWith('.xml')) {
         promises.push(
-          entry.async('text').then(text => {
+          entry.async('blob').then(async blob => {
             const name = relativePath.split('/').pop();
-            processXmlText(text, name, newFiles);
+            await processXmlText(await blob.text(), name, newFiles, documents, blob);
           })
         );
       } else if (lowerPath.endsWith('.zip')) {
@@ -171,7 +192,7 @@ function App() {
           entry.async('arraybuffer').then(async (buf) => {
             try {
               const innerZip = await JSZip.loadAsync(buf);
-              await extractZipEntries(innerZip, newFiles);
+              await extractZipEntries(innerZip, newFiles, documents);
             } catch {
               const name = relativePath.split('/').pop();
               newFiles.push({ id: crypto.randomUUID(), name, error: 'Erro ao descompactar ZIP interno.' });
@@ -184,31 +205,39 @@ function App() {
   };
 
   const processFiles = async (fileList) => {
+    const selectedFiles = Array.from(fileList);
     setIsProcessing(true);
-
+    setArchiveMessage('');
     const newFiles = [];
+    const documents = [];
 
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      const isZip = file.name.endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
+    try {
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const isZip = file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
 
-      if (isZip) {
-        try {
-          const zip = await JSZip.loadAsync(file);
-          await extractZipEntries(zip, newFiles);
-        } catch {
-          newFiles.push({ id: crypto.randomUUID(), name: file.name, error: 'Erro ao descompactar arquivo ZIP.' });
+        if (isZip) {
+          try {
+            const zip = await JSZip.loadAsync(file);
+            await extractZipEntries(zip, newFiles, documents);
+          } catch {
+            newFiles.push({ id: crypto.randomUUID(), name: file.name, error: 'Erro ao descompactar arquivo ZIP.' });
+          }
+        } else if (file.type === 'text/xml' || file.name.toLowerCase().endsWith('.xml')) {
+          const text = await file.text();
+          await processXmlText(text, file.name, newFiles, documents, file);
+        } else {
+          newFiles.push({ id: crypto.randomUUID(), name: file.name, error: 'Apenas arquivos XML ou ZIP são permitidos.' });
         }
-      } else if (file.type === 'text/xml' || file.name.endsWith('.xml')) {
-        const text = await file.text();
-        processXmlText(text, file.name, newFiles);
-      } else {
-        newFiles.push({ id: crypto.randomUUID(), name: file.name, error: 'Apenas arquivos XML ou ZIP são permitidos.' });
       }
-    }
 
-    setFiles((prev) => mergeInvoiceImports(prev, newFiles));
-    setIsProcessing(false);
+      await saveXmlDocuments(documents);
+      setFiles((prev) => mergeInvoiceImports(prev, newFiles));
+    } catch (error) {
+      setArchiveMessage(error.message || 'Não foi possível importar os arquivos. Tente novamente.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleDrop = (e) => {
@@ -233,6 +262,7 @@ function App() {
   const clearAllFiles = useCallback(() => {
     if (window.confirm("Deseja realmente limpar todos os arquivos?")) {
       setFiles([]);
+      setSelectedIds(new Set());
     }
   }, []);
 
@@ -315,17 +345,47 @@ function App() {
   const auditPeriodLabel = audit.periodo ? audit.periodo.split('-').reverse().join('/') : null;
 
   // Filtragem memoizada separada: depende de classifiedFiles + debouncedQuery
-  const filteredFiles = useMemo(() => {
-    const q = normalizeStr(debouncedQuery);
-    if (!q) return classifiedFiles;
-    return classifiedFiles.filter((f) =>
-      normalizeStr(f.name).includes(q) ||
-      normalizeStr(String(f.numero ?? '')).includes(q) ||
-      normalizeStr(f.type).includes(q) ||
-      normalizeStr(f.error).includes(q) ||
-      normalizeStr(f.naturezaOperacao).includes(q)
-    );
-  }, [classifiedFiles, debouncedQuery]);
+  const filteredFiles = useMemo(
+    () => filterInvoices(classifiedFiles, debouncedQuery),
+    [classifiedFiles, debouncedQuery]
+  );
+  const selectedFiles = useMemo(
+    () => classifiedFiles.filter(file => !file.error && selectedIds.has(file.id)),
+    [classifiedFiles, selectedIds]
+  );
+  const selectableFiles = filteredFiles.filter(file => !file.error);
+  const allVisibleSelected = selectableFiles.length > 0 && selectableFiles.every(file => selectedIds.has(file.id));
+  const searchPending = searchQuery !== debouncedQuery;
+  const toggleVisibleSelection = () => {
+    setSelectedIds(previous => {
+      const next = new Set(previous);
+      for (const file of selectableFiles) {
+        if (allVisibleSelected) next.delete(file.id);
+        else next.add(file.id);
+      }
+      return next;
+    });
+  };
+
+  const exportInvoices = async (invoices) => {
+    setIsExporting(true);
+    setArchiveMessage('');
+    try {
+      const archive = await createInvoiceArchive(invoices);
+      const url = URL.createObjectURL(new Blob([archive], { type: 'application/zip' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'notas-fiscais.zip';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) {
+      setArchiveMessage(error.message || 'Não foi possível exportar os XMLs. Tente novamente.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // Nomes amigáveis dos anexos (objeto estático, referência estável)
   const nomeAnexo = { anexo1: 'Anexo I', anexo2: 'Anexo II', anexo3: 'Anexo III', anexo4: 'Anexo IV', anexo5: 'Anexo V' };
@@ -390,11 +450,29 @@ function App() {
             <h3 className="file-list-title">
               Arquivos Processados
               {files.length > 0 && (
-                <button className="btn btn-outline" style={{padding: '0.35rem 0.75rem', fontSize: '0.75rem'}} onClick={clearAllFiles}>
+                <button className="btn btn-outline" style={{padding: '0.35rem 0.75rem', fontSize: '0.75rem'}} onClick={clearAllFiles} disabled={isProcessing || isExporting}>
                   Limpar Todos
                 </button>
               )}
             </h3>
+
+            {files.length > 0 && (
+              <div className="export-actions">
+                <button className="btn btn-outline" disabled={isProcessing || isExporting} onClick={() => exportInvoices(classifiedFiles)}>
+                  {isExporting ? 'Gerando ZIP...' : 'Exportar todas as notas (ZIP)'}
+                </button>
+                {debouncedQuery.trim() && (
+                  <button className="btn btn-outline" disabled={isProcessing || isExporting || searchPending || !selectableFiles.length} onClick={() => exportInvoices(filteredFiles)}>
+                    Exportar resultado da busca (ZIP)
+                  </button>
+                )}
+                <p className="export-help">Envie os XMLs originais ao escritório em um único arquivo, incluindo cancelamentos e inutilizações.</p>
+                {files.some(file => !file.error && !file.xmlDocuments?.length) && (
+                  <p className="export-help">Para exportar notas antigas, reimporte os ZIPs originais uma vez.</p>
+                )}
+              </div>
+            )}
+            {archiveMessage && <p role="alert" className="archive-message">{archiveMessage}</p>}
 
             {files.length > 0 && (
               <div className="search-bar-wrapper">
@@ -405,7 +483,9 @@ function App() {
                   id="searchNotes"
                   className="search-bar-input"
                   type="text"
-                  placeholder="Buscar por nome, número, tipo..."
+                  placeholder="Buscar notas: 123, 456, 789 ou nome..."
+                  aria-label="Buscar notas"
+                  aria-describedby="invoice-search-help"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -419,6 +499,23 @@ function App() {
               </div>
             )}
 
+            {files.length > 0 && (
+              <>
+                <p id="invoice-search-help" className="export-help">Busque vários números separados por vírgula ou ponto e vírgula. Números são buscados por correspondência exata.</p>
+                <div className="selection-actions">
+                  <label className="selection-label">
+                    <input type="checkbox" className="invoice-checkbox" checked={allVisibleSelected} disabled={!selectableFiles.length || searchPending} onChange={toggleVisibleSelection} />
+                    Selecionar todas as notas da lista ({selectableFiles.length})
+                  </label>
+                  <span role="status">{selectedFiles.length} nota(s) selecionada(s), incluindo outras buscas</span>
+                  <button className="btn" disabled={!selectedFiles.length || isProcessing || isExporting} onClick={() => exportInvoices(selectedFiles)}>
+                    Exportar selecionadas ({selectedFiles.length}) em ZIP
+                  </button>
+                  {selectedIds.size > 0 && <button className="btn btn-outline" onClick={() => setSelectedIds(new Set())}>Limpar seleção</button>}
+                </div>
+              </>
+            )}
+
             {files.length === 0 ? (
               <div className="empty-state">Nenhum arquivo enviado ainda.</div>
             ) : filteredFiles.length === 0 ? (
@@ -429,6 +526,8 @@ function App() {
                   <FileItem
                     key={file.id}
                     file={file}
+                    selected={selectedIds.has(file.id)}
+                    onSelect={toggleSelection}
                     onRemove={removeFile}
                     formatCurrency={formatCurrency}
                   />
